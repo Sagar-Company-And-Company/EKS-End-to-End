@@ -9,8 +9,6 @@
 *.plan
 
 # Variables
-*.tfvars
-*.tfvars.json
 
 # Crash logs
 crash.log
