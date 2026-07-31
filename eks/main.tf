@@ -1,44 +1,71 @@
-locals {
-  org = "ap-medium"
-  env = var.env
+##########################################################
+# VPC MODULE
+##########################################################
+
+module "vpc" {
+
+  source = "../modules/vpc"
+
+  project_name = var.project_name
+
+  environment = var.environment
+
+  vpc_cidr = var.vpc_cidr
+
+  public_subnets = var.public_subnets
+
+  private_subnets = var.private_subnets
+
+  availability_zones = var.availability_zones
 }
 
+##########################################################
+# IAM MODULE
+##########################################################
+
+module "iam" {
+
+  source = "../modules/iam"
+
+  project_name = var.project_name
+}
+
+##########################################################
+# EKS MODULE
+##########################################################
+
 module "eks" {
-  source = "../module"
 
-  env                   = var.env
-  cluster-name          = "${local.env}-${local.org}-${var.cluster-name}"
-  cidr-block            = var.vpc-cidr-block
-  vpc-name              = "${local.env}-${local.org}-${var.vpc-name}"
-  igw-name              = "${local.env}-${local.org}-${var.igw-name}"
-  pub-subnet-count      = var.pub-subnet-count
-  pub-cidr-block        = var.pub-cidr-block
-  pub-availability-zone = var.pub-availability-zone
-  pub-sub-name          = "${local.env}-${local.org}-${var.pub-sub-name}"
-  pri-subnet-count      = var.pri-subnet-count
-  pri-cidr-block        = var.pri-cidr-block
-  pri-availability-zone = var.pri-availability-zone
-  pri-sub-name          = "${local.env}-${local.org}-${var.pri-sub-name}"
-  public-rt-name        = "${local.env}-${local.org}-${var.public-rt-name}"
-  private-rt-name       = "${local.env}-${local.org}-${var.private-rt-name}"
-  eip-name              = "${local.env}-${local.org}-${var.eip-name}"
-  ngw-name              = "${local.env}-${local.org}-${var.ngw-name}"
-  eks-sg                = var.eks-sg
+  source = "../modules/eks"
 
-  is_eks_role_enabled           = true
-  is_eks_nodegroup_role_enabled = true
-  ondemand_instance_types       = var.ondemand_instance_types
-  spot_instance_types           = var.spot_instance_types
-  desired_capacity_on_demand    = var.desired_capacity_on_demand
-  min_capacity_on_demand        = var.min_capacity_on_demand
-  max_capacity_on_demand        = var.max_capacity_on_demand
-  desired_capacity_spot         = var.desired_capacity_spot
-  min_capacity_spot             = var.min_capacity_spot
-  max_capacity_spot             = var.max_capacity_spot
-  is-eks-cluster-enabled        = var.is-eks-cluster-enabled
-  cluster-version               = var.cluster-version
-  endpoint-private-access       = var.endpoint-private-access
-  endpoint-public-access        = var.endpoint-public-access
+  cluster_name = var.cluster_name
 
-  addons = var.addons
+  cluster_version = var.cluster_version
+
+  private_subnet_ids = module.vpc.private_subnets
+
+  security_group_id = module.vpc.security_group_id
+
+  cluster_role_arn = module.iam.cluster_role_arn
+
+  node_role_arn = module.iam.node_role_arn
+}
+
+##########################################################
+# OUTPUTS
+##########################################################
+
+output "cluster_name" {
+
+  value = module.eks.cluster_name
+}
+
+output "cluster_endpoint" {
+
+  value = module.eks.cluster_endpoint
+}
+
+output "vpc_id" {
+
+  value = module.vpc.vpc_id
 }
