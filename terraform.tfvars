@@ -1,5 +1,5 @@
-aws_region  = "us-east-1"
-environment = "dev"
+aws_region   = "us-east-1"
+environment  = "dev"
 project_name = "aws-devops-production"
 
 vpc_cidr = "10.0.0.0/16"
