@@ -1,117 +1,228 @@
+#############################################################
+# VARIABLES
+#############################################################
+
+variable "cluster_name" {
+  default = "eks-demo"
+}
+
+variable "cluster_version" {
+  default = "1.33"
+}
+
+variable "private_subnet_ids" {
+  type = list(string)
+}
+
+variable "cluster_role_arn" {
+  type = string
+}
+
+variable "node_role_arn" {
+  type = string
+}
+
+variable "security_group_id" {
+  type = string
+}
+
+#############################################################
+# EKS CLUSTER
+#############################################################
+
 resource "aws_eks_cluster" "eks" {
 
-  count    = var.is-eks-cluster-enabled == true ? 1 : 0
-  name     = var.cluster-name
-  role_arn = aws_iam_role.eks-cluster-role[count.index].arn
-  version  = var.cluster-version
+  name     = var.cluster_name
+  role_arn = var.cluster_role_arn
+  version  = var.cluster_version
 
   vpc_config {
-    subnet_ids              = [aws_subnet.private-subnet[0].id, aws_subnet.private-subnet[1].id, aws_subnet.private-subnet[2].id]
-    endpoint_private_access = var.endpoint-private-access
-    endpoint_public_access  = var.endpoint-public-access
-    security_group_ids      = [aws_security_group.eks-cluster-sg.id]
+
+    subnet_ids = var.private_subnet_ids
+
+    security_group_ids = [
+      var.security_group_id
+    ]
+
+    endpoint_private_access = true
+
+    endpoint_public_access = true
   }
 
-
   access_config {
-    authentication_mode                         = "CONFIG_MAP"
+
+    authentication_mode = "API_AND_CONFIG_MAP"
+
     bootstrap_cluster_creator_admin_permissions = true
   }
 
+  depends_on = [
+    var.cluster_role_arn
+  ]
+
   tags = {
-    Name = var.cluster-name
-    Env  = var.env
+    Name = var.cluster_name
   }
 }
 
-# OIDC Provider
-resource "aws_iam_openid_connect_provider" "eks-oidc" {
-  client_id_list  = ["sts.amazonaws.com"]
-  thumbprint_list = [data.tls_certificate.eks-certificate.certificates[0].sha1_fingerprint]
-  url             = data.tls_certificate.eks-certificate.url
+#############################################################
+# DATA SOURCES
+#############################################################
+
+data "aws_eks_cluster" "cluster" {
+
+  name = aws_eks_cluster.eks.name
 }
 
+data "aws_eks_cluster_auth" "cluster" {
 
-# AddOns for EKS Cluster
-resource "aws_eks_addon" "eks-addons" {
-  for_each      = { for idx, addon in var.addons : idx => addon }
-  cluster_name  = aws_eks_cluster.eks[0].name
-  addon_name    = each.value.name
-  addon_version = each.value.version
+  name = aws_eks_cluster.eks.name
+}
+
+#############################################################
+# EKS MANAGED NODE GROUP
+#############################################################
+
+resource "aws_eks_node_group" "workers" {
+
+  cluster_name    = aws_eks_cluster.eks.name
+
+  node_group_name = "${var.cluster_name}-node-group"
+
+  node_role_arn   = var.node_role_arn
+
+  subnet_ids      = var.private_subnet_ids
+
+  ami_type        = "AL2023_x86_64_STANDARD"
+
+  capacity_type   = "ON_DEMAND"
+
+  instance_types  = ["t3.medium"]
+
+  disk_size       = 20
+
+  scaling_config {
+
+    desired_size = 2
+
+    min_size = 2
+
+    max_size = 4
+  }
+
+  update_config {
+
+    max_unavailable = 1
+  }
+
+  labels = {
+
+    Environment = "dev"
+
+    NodeGroup = "workers"
+  }
+
+  tags = {
+
+    Name = "${var.cluster_name}-worker-node"
+
+    Environment = "dev"
+  }
 
   depends_on = [
-    aws_eks_node_group.ondemand-node,
-    aws_eks_node_group.spot-node
+
+    aws_eks_cluster.eks
   ]
 }
 
-# NodeGroups
-resource "aws_eks_node_group" "ondemand-node" {
-  cluster_name    = aws_eks_cluster.eks[0].name
-  node_group_name = "${var.cluster-name}-on-demand-nodes"
+#############################################################
+# COREDNS ADDON
+#############################################################
 
-  node_role_arn = aws_iam_role.eks-nodegroup-role[0].arn
+resource "aws_eks_addon" "coredns" {
 
-  scaling_config {
-    desired_size = var.desired_capacity_on_demand
-    min_size     = var.min_capacity_on_demand
-    max_size     = var.max_capacity_on_demand
-  }
+  cluster_name = aws_eks_cluster.eks.name
 
-  subnet_ids = [aws_subnet.private-subnet[0].id, aws_subnet.private-subnet[1].id, aws_subnet.private-subnet[2].id]
+  addon_name = "coredns"
 
-  instance_types = var.ondemand_instance_types
-  capacity_type  = "ON_DEMAND"
-  labels = {
-    type = "ondemand"
-  }
+  resolve_conflicts_on_create = "OVERWRITE"
 
-  update_config {
-    max_unavailable = 1
-  }
-  tags = {
-    "Name" = "${var.cluster-name}-ondemand-nodes"
-  }
-  tags_all = {
-    "kubernetes.io/cluster/${var.cluster-name}" = "owned"
-    "Name" = "${var.cluster-name}-ondemand-nodes"
-  }
-
-  depends_on = [aws_eks_cluster.eks]
+  depends_on = [
+    aws_eks_node_group.workers
+  ]
 }
 
-resource "aws_eks_node_group" "spot-node" {
-  cluster_name    = aws_eks_cluster.eks[0].name
-  node_group_name = "${var.cluster-name}-spot-nodes"
+#############################################################
+# KUBE-PROXY ADDON
+#############################################################
 
-  node_role_arn = aws_iam_role.eks-nodegroup-role[0].arn
+resource "aws_eks_addon" "kube_proxy" {
 
-  scaling_config {
-    desired_size = var.desired_capacity_spot
-    min_size     = var.min_capacity_spot
-    max_size     = var.max_capacity_spot
-  }
+  cluster_name = aws_eks_cluster.eks.name
 
-  subnet_ids = [aws_subnet.private-subnet[0].id, aws_subnet.private-subnet[1].id, aws_subnet.private-subnet[2].id]
+  addon_name = "kube-proxy"
 
-  instance_types = var.spot_instance_types
-  capacity_type  = "SPOT"
+  resolve_conflicts_on_create = "OVERWRITE"
 
-  update_config {
-    max_unavailable = 1
-  }
-  tags = {
-    "Name" = "${var.cluster-name}-spot-nodes"
-  }
-  tags_all = {
-    "kubernetes.io/cluster/${var.cluster-name}" = "owned"
-    "Name" = "${var.cluster-name}-ondemand-nodes"
-  }
-  labels = {
-    type      = "spot"
-    lifecycle = "spot"
-  }
-  disk_size = 50
+  depends_on = [
+    aws_eks_node_group.workers
+  ]
+}
 
-  depends_on = [aws_eks_cluster.eks]
+#############################################################
+# VPC CNI ADDON
+#############################################################
+
+resource "aws_eks_addon" "vpc_cni" {
+
+  cluster_name = aws_eks_cluster.eks.name
+
+  addon_name = "vpc-cni"
+
+  resolve_conflicts_on_create = "OVERWRITE"
+
+  depends_on = [
+    aws_eks_node_group.workers
+  ]
+}
+
+#############################################################
+# EBS CSI DRIVER
+#############################################################
+
+resource "aws_eks_addon" "ebs_csi" {
+
+  cluster_name = aws_eks_cluster.eks.name
+
+  addon_name = "aws-ebs-csi-driver"
+
+  resolve_conflicts_on_create = "OVERWRITE"
+
+  depends_on = [
+    aws_eks_node_group.workers
+  ]
+}
+
+#############################################################
+# OUTPUTS
+#############################################################
+
+output "cluster_name" {
+  value = aws_eks_cluster.eks.name
+}
+
+output "cluster_endpoint" {
+  value = aws_eks_cluster.eks.endpoint
+}
+
+output "cluster_certificate" {
+  value = aws_eks_cluster.eks.certificate_authority[0].data
+}
+
+output "cluster_arn" {
+  value = aws_eks_cluster.eks.arn
+}
+
+output "node_group_name" {
+  value = aws_eks_node_group.workers.node_group_name
 }
