@@ -1,169 +1,292 @@
-locals {
-  cluster-name = var.cluster-name
+############################################################
+# VARIABLES
+############################################################
+
+variable "project_name" {
+  default = "eks-demo"
 }
 
-resource "aws_vpc" "vpc" {
-  cidr_block           = var.cidr-block
-  instance_tenancy     = "default"
-  enable_dns_hostnames = true
+variable "environment" {
+  default = "dev"
+}
+
+variable "vpc_cidr" {
+  default = "10.0.0.0/16"
+}
+
+variable "public_subnets" {
+  default = [
+    "10.0.1.0/24",
+    "10.0.2.0/24"
+  ]
+}
+
+variable "private_subnets" {
+  default = [
+    "10.0.11.0/24",
+    "10.0.12.0/24"
+  ]
+}
+
+variable "availability_zones" {
+  default = [
+    "ap-south-1a",
+    "ap-south-1b"
+  ]
+}
+
+############################################################
+# VPC
+############################################################
+
+resource "aws_vpc" "this" {
+
+  cidr_block           = var.vpc_cidr
   enable_dns_support   = true
+  enable_dns_hostnames = true
 
   tags = {
-    Name = var.vpc-name
-    Env  = var.env
-
+    Name = "${var.project_name}-${var.environment}-vpc"
   }
 }
 
-resource "aws_internet_gateway" "igw" {
-  vpc_id = aws_vpc.vpc.id
+############################################################
+# INTERNET GATEWAY
+############################################################
+
+resource "aws_internet_gateway" "this" {
+
+  vpc_id = aws_vpc.this.id
 
   tags = {
-    Name                                          = var.igw-name
-    env                                           = var.env
-    "kubernetes.io/cluster/${local.cluster-name}" = "owned"
+    Name = "${var.project_name}-igw"
   }
-
-  depends_on = [aws_vpc.vpc]
 }
 
-resource "aws_subnet" "public-subnet" {
-  count                   = var.pub-subnet-count
-  vpc_id                  = aws_vpc.vpc.id
-  cidr_block              = element(var.pub-cidr-block, count.index)
-  availability_zone       = element(var.pub-availability-zone, count.index)
+############################################################
+# PUBLIC SUBNETS
+############################################################
+
+resource "aws_subnet" "public" {
+
+  count = length(var.public_subnets)
+
+  vpc_id = aws_vpc.this.id
+
+  cidr_block = var.public_subnets[count.index]
+
+  availability_zone = var.availability_zones[count.index]
+
   map_public_ip_on_launch = true
 
   tags = {
-    Name                                          = "${var.pub-sub-name}-${count.index + 1}"
-    Env                                           = var.env
-    "kubernetes.io/cluster/${local.cluster-name}" = "owned"
-    "kubernetes.io/role/elb"                      = "1"
-  }
+    Name = "${var.project_name}-public-${count.index+1}"
 
-  depends_on = [aws_vpc.vpc,
-  ]
+    "kubernetes.io/role/elb" = "1"
+  }
 }
 
-resource "aws_subnet" "private-subnet" {
-  count                   = var.pri-subnet-count
-  vpc_id                  = aws_vpc.vpc.id
-  cidr_block              = element(var.pri-cidr-block, count.index)
-  availability_zone       = element(var.pri-availability-zone, count.index)
-  map_public_ip_on_launch = false
+############################################################
+# PRIVATE SUBNETS
+############################################################
+
+resource "aws_subnet" "private" {
+
+  count = length(var.private_subnets)
+
+  vpc_id = aws_vpc.this.id
+
+  cidr_block = var.private_subnets[count.index]
+
+  availability_zone = var.availability_zones[count.index]
 
   tags = {
-    Name                                          = "${var.pri-sub-name}-${count.index + 1}"
-    Env                                           = var.env
-    "kubernetes.io/cluster/${local.cluster-name}" = "owned"
-    "kubernetes.io/role/internal-elb"             = "1"
-  }
+    Name = "${var.project_name}-private-${count.index+1}"
 
-  depends_on = [aws_vpc.vpc,
-  ]
+    "kubernetes.io/role/internal-elb" = "1"
+  }
 }
 
+############################################################
+# ELASTIC IP
+############################################################
 
-resource "aws_route_table" "public-rt" {
-  vpc_id = aws_vpc.vpc.id
+resource "aws_eip" "nat" {
 
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.igw.id
-  }
-
-  tags = {
-    Name = var.public-rt-name
-    env  = var.env
-  }
-
-  depends_on = [aws_vpc.vpc
-  ]
-}
-
-resource "aws_route_table_association" "name" {
-  count          = 3
-  route_table_id = aws_route_table.public-rt.id
-  subnet_id      = aws_subnet.public-subnet[count.index].id
-
-  depends_on = [aws_vpc.vpc,
-    aws_subnet.public-subnet
-  ]
-}
-
-resource "aws_eip" "ngw-eip" {
   domain = "vpc"
 
-  tags = {
-    Name = var.eip-name
-  }
-
-  depends_on = [aws_vpc.vpc
+  depends_on = [
+    aws_internet_gateway.this
   ]
 
+  tags = {
+    Name = "${var.project_name}-nat-eip"
+  }
 }
 
-resource "aws_nat_gateway" "ngw" {
-  allocation_id = aws_eip.ngw-eip.id
-  subnet_id     = aws_subnet.public-subnet[0].id
+############################################################
+# NAT GATEWAY
+############################################################
+
+resource "aws_nat_gateway" "this" {
+
+  allocation_id = aws_eip.nat.id
+
+  subnet_id = aws_subnet.public[0].id
+
+  depends_on = [
+    aws_internet_gateway.this
+  ]
 
   tags = {
-    Name = var.ngw-name
+    Name = "${var.project_name}-natgw"
   }
-
-  depends_on = [aws_vpc.vpc,
-    aws_eip.ngw-eip
-  ]
 }
 
-resource "aws_route_table" "private-rt" {
-  vpc_id = aws_vpc.vpc.id
+############################################################
+# PUBLIC ROUTE TABLE
+############################################################
+
+resource "aws_route_table" "public" {
+
+  vpc_id = aws_vpc.this.id
 
   route {
-    cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.ngw.id
+
+    cidr_block = "0.0.0.0/0"
+
+    gateway_id = aws_internet_gateway.this.id
   }
 
   tags = {
-    Name = var.private-rt-name
-    env  = var.env
+    Name = "${var.project_name}-public-rt"
+  }
+}
+
+############################################################
+# PRIVATE ROUTE TABLE
+############################################################
+
+resource "aws_route_table" "private" {
+
+  vpc_id = aws_vpc.this.id
+
+  route {
+
+    cidr_block = "0.0.0.0/0"
+
+    nat_gateway_id = aws_nat_gateway.this.id
   }
 
-  depends_on = [aws_vpc.vpc,
-  ]
+  tags = {
+    Name = "${var.project_name}-private-rt"
+  }
 }
 
-resource "aws_route_table_association" "private-rt-association" {
-  count          = 3
-  route_table_id = aws_route_table.private-rt.id
-  subnet_id      = aws_subnet.private-subnet[count.index].id
+############################################################
+# PUBLIC ROUTE TABLE ASSOCIATION
+############################################################
 
-  depends_on = [aws_vpc.vpc,
-    aws_subnet.private-subnet
-  ]
+resource "aws_route_table_association" "public" {
+
+  count = length(var.public_subnets)
+
+  subnet_id = aws_subnet.public[count.index].id
+
+  route_table_id = aws_route_table.public.id
 }
 
-resource "aws_security_group" "eks-cluster-sg" {
-  name        = var.eks-sg
-  description = "Allow 443 from Jump Server only"
+############################################################
+# PRIVATE ROUTE TABLE ASSOCIATION
+############################################################
 
-  vpc_id = aws_vpc.vpc.id
+resource "aws_route_table_association" "private" {
+
+  count = length(var.private_subnets)
+
+  subnet_id = aws_subnet.private[count.index].id
+
+  route_table_id = aws_route_table.private.id
+}
+
+############################################################
+# EKS SECURITY GROUP
+############################################################
+
+resource "aws_security_group" "eks" {
+
+  name = "${var.project_name}-eks-sg"
+
+  description = "Security Group for EKS"
+
+  vpc_id = aws_vpc.this.id
 
   ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] // It should be specific IP range
+
+    description = "HTTPS"
+
+    from_port = 443
+
+    to_port = 443
+
+    protocol = "tcp"
+
+    cidr_blocks = [
+      "0.0.0.0/0"
+    ]
+  }
+
+  ingress {
+
+    description = "Node Communication"
+
+    from_port = 1025
+
+    to_port = 65535
+
+    protocol = "tcp"
+
+    self = true
   }
 
   egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+
+    from_port = 0
+
+    to_port = 0
+
+    protocol = "-1"
+
+    cidr_blocks = [
+      "0.0.0.0/0"
+    ]
   }
 
   tags = {
-    Name = var.eks-sg
+    Name = "${var.project_name}-eks-sg"
   }
+}
+
+############################################################
+# OUTPUTS
+############################################################
+
+output "vpc_id" {
+
+  value = aws_vpc.this.id
+}
+
+output "public_subnets" {
+
+  value = aws_subnet.public[*].id
+}
+
+output "private_subnets" {
+
+  value = aws_subnet.private[*].id
+}
+
+output "security_group_id" {
+
+  value = aws_security_group.eks.id
 }
