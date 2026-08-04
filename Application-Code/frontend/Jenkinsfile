@@ -1,0 +1,182 @@
+pipeline {
+
+    agent any
+
+    environment {
+        AWS_REGION = 'us-east-1'
+
+        ECR_REPOSITORY = 'devops-app'
+
+        // We calculate account ID dynamically later.
+        IMAGE_TAG = "${BUILD_NUMBER}"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+
+                sh '''
+                    echo "===== CHECKOUT ====="
+                    echo "Branch: ${BRANCH_NAME:-unknown}"
+                    echo "Commit:"
+                    git rev-parse --short HEAD
+                '''
+            }
+        }
+
+
+        stage('Build & Test') {
+            steps {
+                sh '''
+                    echo "===== BUILD ====="
+
+                    if [ -f "pom.xml" ]; then
+                        echo "Maven project detected"
+                        mvn clean test
+
+                    elif [ -f "package.json" ]; then
+                        echo "Node.js project detected"
+                        npm ci
+                        npm test --if-present
+
+                    else
+                        echo "No Maven/Node build file detected."
+                        echo "Continuing because Docker may handle the build."
+                    fi
+                '''
+            }
+        }
+
+
+        stage('SonarQube Analysis') {
+            steps {
+
+                script {
+
+                    def scannerHome = tool 'sonar-scanner'
+
+                    withSonarQubeEnv('SonarQube') {
+
+                        sh """
+                            ${scannerHome}/bin/sonar-scanner \
+                            -Dsonar.projectKey=devops-app \
+                            -Dsonar.projectName=devops-app \
+                            -Dsonar.sources=.
+                        """
+                    }
+                }
+            }
+        }
+
+
+        stage('Quality Gate') {
+            steps {
+
+                timeout(time: 10, unit: 'MINUTES') {
+
+                    waitForQualityGate abortPipeline: true
+
+                }
+            }
+        }
+
+
+        stage('Docker Build') {
+            steps {
+
+                sh '''
+                    echo "===== DOCKER BUILD ====="
+
+                    docker build \
+                    -t ${ECR_REPOSITORY}:${IMAGE_TAG} .
+                '''
+            }
+        }
+
+
+        stage('Trivy Scan') {
+            steps {
+
+                sh '''
+                    echo "===== TRIVY SCAN ====="
+
+                    trivy image \
+                    --severity CRITICAL \
+                    --exit-code 1 \
+                    --no-progress \
+                    ${ECR_REPOSITORY}:${IMAGE_TAG}
+                '''
+            }
+        }
+
+
+        stage('ECR Login') {
+            steps {
+
+                script {
+
+                    env.AWS_ACCOUNT_ID = sh(
+                        script: "aws sts get-caller-identity --query Account --output text",
+                        returnStdout: true
+                    ).trim()
+
+                    env.ECR_REGISTRY =
+                        "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+                    env.ECR_IMAGE =
+                        "${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+                }
+
+                sh '''
+                    echo "===== ECR LOGIN ====="
+
+                    aws ecr get-login-password \
+                    --region ${AWS_REGION} |
+                    docker login \
+                    --username AWS \
+                    --password-stdin ${ECR_REGISTRY}
+                '''
+            }
+        }
+
+
+        stage('Push Image to ECR') {
+            steps {
+
+                sh '''
+                    echo "===== PUSH IMAGE ====="
+
+                    docker tag \
+                    ${ECR_REPOSITORY}:${IMAGE_TAG} \
+                    ${ECR_IMAGE}
+
+                    docker push ${ECR_IMAGE}
+                '''
+            }
+        }
+    }
+
+
+    post {
+
+        success {
+            echo 'CI PIPELINE SUCCESSFUL'
+            echo "Docker image pushed to ECR."
+        }
+
+        failure {
+            echo 'CI PIPELINE FAILED'
+            echo 'Check the failed Jenkins stage.'
+        }
+
+        always {
+
+            sh '''
+                docker image prune -f || true
+            '''
+
+        }
+    }
+}
