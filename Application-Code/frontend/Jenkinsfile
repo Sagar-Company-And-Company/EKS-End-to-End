@@ -156,10 +156,7 @@ pipeline {
                 sh '''
                     echo "========== TAG DOCKER IMAGE =========="
 
-                    docker tag \
-                        ${ECR_REPOSITORY}:${IMAGE_TAG} \
-                        ${ECR_IMAGE}
-
+                    docker tag ${ECR_IMAGE} ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
                     echo "Tagged image:"
                     echo ${ECR_IMAGE}
                 '''
@@ -173,8 +170,7 @@ pipeline {
                 sh '''
                     echo "========== PUSH IMAGE TO ECR =========="
 
-                    docker push ${ECR_IMAGE}
-
+                    docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
                     echo "Image pushed successfully."
                 '''
             }
