@@ -1,5 +1,10 @@
 pipeline {
+
     agent any
+
+    tools {
+        nodejs 'node18'
+    }
 
     environment {
         AWS_REGION     = 'us-east-1'
@@ -12,6 +17,7 @@ pipeline {
         stage('Checkout') {
             steps {
                 echo '========== CHECKOUT =========='
+
                 checkout scm
 
                 sh '''
@@ -23,18 +29,29 @@ pipeline {
 
                     echo "Repository:"
                     ls -la
+
+                    echo "Frontend directory:"
+                    ls -la Application-Code/frontend
                 '''
             }
         }
 
+
         stage('Frontend Build') {
             steps {
+
                 dir('Application-Code/frontend') {
+
                     sh '''
                         echo "========== FRONTEND BUILD =========="
 
+                        echo "Node version:"
                         node --version
+
+                        echo "NPM version:"
                         npm --version
+
+                        echo "Installing dependencies..."
 
                         if [ -f package-lock.json ]; then
                             npm ci
@@ -42,48 +59,30 @@ pipeline {
                             npm install
                         fi
 
+                        echo "Building React application..."
+
                         npm run build
+
+                        echo "Frontend build completed successfully."
                     '''
                 }
             }
         }
 
-        // stage('SonarQube Analysis') {
-        //     steps {
-        //         dir('frontend') {
-        //             script {
-        //                 def scannerHome = tool 'sonar-scanner'
-
-        //                 withSonarQubeEnv('SonarQube') {
-        //                     sh """
-        //                         echo "========== SONARQUBE =========="
-
-        //                         ${scannerHome}/bin/sonar-scanner \
-        //                           -Dsonar.projectKey=devops-frontend \
-        //                           -Dsonar.projectName=devops-frontend \
-        //                           -Dsonar.sources=src
-        //                     """
-        //                 }
-        //             }
-        //         }
-        //     }
-        // }
-
-        // stage('SonarQube Quality Gate') {
-        //     steps {
-        //         echo '========== QUALITY GATE =========='
-
-        //         timeout(time: 10, unit: 'MINUTES') {
-        //             waitForQualityGate abortPipeline: true
-        //         }
-        //     }
-        // }
 
         stage('Get AWS Information') {
             steps {
+
                 script {
+
+                    echo '========== AWS INFORMATION =========='
+
                     env.AWS_ACCOUNT_ID = sh(
-                        script: 'aws sts get-caller-identity --query Account --output text',
+                        script: '''
+                            aws sts get-caller-identity \
+                            --query Account \
+                            --output text
+                        ''',
                         returnStdout: true
                     ).trim()
 
@@ -93,113 +92,157 @@ pipeline {
                     env.ECR_IMAGE =
                         "${env.ECR_REGISTRY}/${env.ECR_REPOSITORY}:${env.IMAGE_TAG}"
 
-                    echo "AWS Account: ${env.AWS_ACCOUNT_ID}"
+                    echo "AWS Account ID: ${env.AWS_ACCOUNT_ID}"
+                    echo "AWS Region: ${env.AWS_REGION}"
+                    echo "ECR Repository: ${env.ECR_REPOSITORY}"
                     echo "Image Tag: ${env.IMAGE_TAG}"
                     echo "ECR Image: ${env.ECR_IMAGE}"
                 }
             }
         }
 
+
         stage('Docker Build') {
             steps {
+
                 sh '''
                     echo "========== DOCKER BUILD =========="
 
+                    docker --version
+
                     docker build \
-                      -t ${ECR_REPOSITORY}:${IMAGE_TAG} \
-                      ./Application-Code/frontend
+                        -t ${ECR_REPOSITORY}:${IMAGE_TAG} \
+                        ./Application-Code/frontend
+
+                    echo "Docker image created:"
 
                     docker images | grep ${ECR_REPOSITORY}
                 '''
             }
         }
 
+
         stage('Trivy Scan') {
             steps {
+
                 sh '''
-                    echo "========== TRIVY SCAN =========="
+                    echo "========== TRIVY SECURITY SCAN =========="
+
+                    trivy --version
 
                     trivy image \
-                      --severity CRITICAL \
-                      --exit-code 1 \
-                      --no-progress \
-                      ${ECR_REPOSITORY}:${IMAGE_TAG}
+                        --severity CRITICAL \
+                        --exit-code 1 \
+                        --no-progress \
+                        ${ECR_REPOSITORY}:${IMAGE_TAG}
+
+                    echo "Trivy scan completed successfully."
                 '''
             }
         }
 
+
         stage('ECR Login') {
             steps {
+
                 sh '''
                     echo "========== ECR LOGIN =========="
 
                     aws ecr get-login-password \
-                      --region ${AWS_REGION} \
+                        --region ${AWS_REGION} \
                     | docker login \
-                      --username AWS \
-                      --password-stdin ${ECR_REGISTRY}
+                        --username AWS \
+                        --password-stdin ${ECR_REGISTRY}
+
+                    echo "ECR login successful."
                 '''
             }
         }
+
 
         stage('Tag Docker Image') {
             steps {
+
                 sh '''
-                    echo "========== TAG IMAGE =========="
+                    echo "========== TAG DOCKER IMAGE =========="
 
                     docker tag \
-                      ${ECR_REPOSITORY}:${IMAGE_TAG} \
-                      ${ECR_IMAGE}
+                        ${ECR_REPOSITORY}:${IMAGE_TAG} \
+                        ${ECR_IMAGE}
+
+                    echo "Tagged image:"
+                    echo ${ECR_IMAGE}
                 '''
             }
         }
+
 
         stage('Push Image to ECR') {
             steps {
+
                 sh '''
-                    echo "========== PUSH TO ECR =========="
+                    echo "========== PUSH IMAGE TO ECR =========="
 
                     docker push ${ECR_IMAGE}
+
+                    echo "Image pushed successfully."
                 '''
             }
         }
 
+
         stage('Verify Image') {
             steps {
+
                 sh '''
-                    echo "========== VERIFY ECR =========="
+                    echo "========== VERIFY ECR IMAGE =========="
 
                     aws ecr describe-images \
-                      --repository-name ${ECR_REPOSITORY} \
-                      --region ${AWS_REGION} \
-                      --image-ids imageTag=${IMAGE_TAG}
+                        --repository-name ${ECR_REPOSITORY} \
+                        --region ${AWS_REGION} \
+                        --image-ids imageTag=${IMAGE_TAG}
+
+                    echo "ECR image verified successfully."
                 '''
             }
         }
     }
+
 
     post {
 
         success {
-            echo '========================================'
-            echo 'FRONTEND CI PIPELINE SUCCESSFUL'
-            echo "Image: ${ECR_IMAGE}"
-            echo '========================================'
+
+            echo '''
+            ========================================
+            FRONTEND CI PIPELINE SUCCESSFUL
+            ========================================
+            '''
+
+            echo "Docker Image: ${ECR_IMAGE}"
+            echo "Build Number: ${BUILD_NUMBER}"
         }
+
 
         failure {
-            echo '========================================'
-            echo 'FRONTEND CI PIPELINE FAILED'
-            echo 'Check the failed stage above.'
-            echo '========================================'
+
+            echo '''
+            ========================================
+            FRONTEND CI PIPELINE FAILED
+            ========================================
+            '''
+
+            echo "Check the failed stage in Console Output."
         }
 
+
         always {
+
             sh '''
-                echo "Cleaning Jenkins workspace..."
-                rm -rf frontend/node_modules || true
+                echo "========== CLEANUP =========="
+
+                rm -rf Application-Code/frontend/node_modules || true
             '''
         }
     }
 }
-
