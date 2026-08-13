@@ -5,6 +5,9 @@ pipeline {
     environment {
         AWS_REGION     = 'us-east-1'
         ECR_REPOSITORY = 'aws-devops-production-frontend'
+        IMAGE_TAG      = "${BUILD_NUMBER}"
+
+        MANIFEST_REPO  = 'https://github.com/sj27773/k8-manifests.git'
     }
 
     stages {
@@ -18,6 +21,7 @@ pipeline {
         stage('Frontend Build') {
             steps {
                 dir('Application-Code/frontend') {
+
                     sh '''
                         echo "========== FRONTEND BUILD =========="
 
@@ -34,6 +38,7 @@ pipeline {
 
         stage('Get AWS Information') {
             steps {
+
                 script {
 
                     env.AWS_ACCOUNT_ID = sh(
@@ -45,30 +50,29 @@ pipeline {
                         "${env.AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
                     env.ECR_IMAGE =
-                        "${env.ECR_REGISTRY}/${ECR_REPOSITORY}:latest"
+                        "${env.ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
 
-                    echo "AWS Account: ${env.AWS_ACCOUNT_ID}"
-                    echo "ECR Image: ${env.ECR_IMAGE}"
+                    echo "ECR Image = ${env.ECR_IMAGE}"
                 }
             }
         }
 
         stage('Docker Build') {
             steps {
+
                 sh '''
                     echo "========== DOCKER BUILD =========="
 
                     docker build \
-                    -t ${ECR_REPOSITORY}:latest \
+                    -t ${ECR_REPOSITORY}:${IMAGE_TAG} \
                     ./Application-Code/frontend
-
-                    docker images
                 '''
             }
         }
 
         stage('Trivy Scan') {
             steps {
+
                 sh '''
                     echo "========== TRIVY SCAN =========="
 
@@ -76,13 +80,14 @@ pipeline {
                     --severity CRITICAL \
                     --exit-code 0 \
                     --no-progress \
-                    ${ECR_REPOSITORY}:latest
+                    ${ECR_REPOSITORY}:${IMAGE_TAG}
                 '''
             }
         }
 
         stage('ECR Login') {
             steps {
+
                 sh '''
                     echo "========== ECR LOGIN =========="
 
@@ -97,18 +102,18 @@ pipeline {
 
         stage('Tag Docker Image') {
             steps {
-                sh '''
-                    echo "========== TAG IMAGE =========="
 
+                sh '''
                     docker tag \
-                    ${ECR_REPOSITORY}:latest \
+                    ${ECR_REPOSITORY}:${IMAGE_TAG} \
                     ${ECR_IMAGE}
                 '''
             }
         }
 
-        stage('Push Image to ECR') {
+        stage('Push Image To ECR') {
             steps {
+
                 sh '''
                     echo "========== PUSH IMAGE =========="
 
@@ -117,11 +122,36 @@ pipeline {
             }
         }
 
+        stage('Update Manifest Repo') {
+            steps {
+
+                sh '''
+                    echo "========== UPDATE MANIFEST =========="
+
+                    rm -rf k8-manifests
+
+                    git clone https://sj27773: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@github.com/sj27773/k8-manifests.git
+
+                    cd k8-manifests
+
+                    sed -i "s|image:.*|image: ${ECR_IMAGE}|g" frontend/deployment.yaml
+
+                    git config user.email "jenkins@local"
+                    git config user.name "Jenkins"
+
+                    git add .
+
+                    git commit -m "Update frontend image ${IMAGE_TAG}" || true
+
+                    git push origin main
+                '''
+            }
+        }
+
         stage('Verify Image') {
             steps {
-                sh '''
-                    echo "========== VERIFY IMAGE =========="
 
+                sh '''
                     aws ecr describe-images \
                     --repository-name ${ECR_REPOSITORY} \
                     --region ${AWS_REGION}
@@ -133,19 +163,25 @@ pipeline {
     post {
 
         success {
-            echo "===================================="
-            echo "FRONTEND PIPELINE SUCCESS"
-            echo "Image: ${ECR_IMAGE}"
-            echo "===================================="
+
+            echo '''
+========================================
+FRONTEND PIPELINE SUCCESS
+========================================
+'''
         }
 
         failure {
-            echo "===================================="
-            echo "FRONTEND PIPELINE FAILED"
-            echo "===================================="
+
+            echo '''
+========================================
+FRONTEND PIPELINE FAILED
+========================================
+'''
         }
 
         always {
+
             sh '''
                 rm -rf Application-Code/frontend/node_modules || true
             '''
