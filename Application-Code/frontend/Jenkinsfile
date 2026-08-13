@@ -50,11 +50,7 @@ pipeline {
 
                         echo "Installing dependencies..."
 
-                        if [ -f package-lock.json ]; then
-                            npm ci
-                        else
-                            npm install
-                        fi
+                        npm install
 
                         echo "Building React application..."
 
