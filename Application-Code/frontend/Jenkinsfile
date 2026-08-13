@@ -5,227 +5,148 @@ pipeline {
     environment {
         AWS_REGION     = 'us-east-1'
         ECR_REPOSITORY = 'aws-devops-production-frontend'
-        IMAGE_TAG      = "${BUILD_NUMBER}"
     }
 
     stages {
 
         stage('Checkout') {
             steps {
-                echo '========== CHECKOUT =========='
-
                 checkout scm
-
-                sh '''
-                    echo "Branch:"
-                    git branch --show-current
-
-                    echo "Commit:"
-                    git rev-parse --short HEAD
-
-                    echo "Repository:"
-                    ls -la
-
-                    echo "Frontend directory:"
-                    ls -la Application-Code/frontend
-                '''
             }
         }
 
-
         stage('Frontend Build') {
             steps {
-
                 dir('Application-Code/frontend') {
-
                     sh '''
                         echo "========== FRONTEND BUILD =========="
 
-                        echo "Node version:"
                         node --version
-
-                        echo "NPM version:"
                         npm --version
-
-                        echo "Installing dependencies..."
 
                         npm install
 
-                        echo "Building React application..."
-
-                        echo "Frontend build completed successfully."
+                        echo "Frontend build completed."
                     '''
                 }
             }
         }
 
-
         stage('Get AWS Information') {
             steps {
-
                 script {
 
-                    echo '========== AWS INFORMATION =========='
-
                     env.AWS_ACCOUNT_ID = sh(
-                        script: '''
-                            aws sts get-caller-identity \
-                            --query Account \
-                            --output text
-                        ''',
+                        script: 'aws sts get-caller-identity --query Account --output text',
                         returnStdout: true
                     ).trim()
 
                     env.ECR_REGISTRY =
-                        "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.AWS_REGION}.amazonaws.com"
+                        "${env.AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
                     env.ECR_IMAGE =
-                        "${env.ECR_REGISTRY}/${env.ECR_REPOSITORY}:latest"
+                        "${env.ECR_REGISTRY}/${ECR_REPOSITORY}:latest"
 
-                    echo "AWS Account ID: ${env.AWS_ACCOUNT_ID}"
-                    echo "AWS Region: ${env.AWS_REGION}"
-                    echo "ECR Repository: ${env.ECR_REPOSITORY}"
+                    echo "AWS Account: ${env.AWS_ACCOUNT_ID}"
+                    echo "ECR Image: ${env.ECR_IMAGE}"
                 }
             }
         }
 
-
         stage('Docker Build') {
             steps {
-
                 sh '''
                     echo "========== DOCKER BUILD =========="
 
-                    docker --version
-
                     docker build \
-                        -t ${ECR_REPOSITORY}:latest \
-                        ./Application-Code/frontend
+                    -t ${ECR_REPOSITORY}:latest \
+                    ./Application-Code/frontend
 
-                    echo "Docker image created:"
-
-                    docker images | grep ${ECR_REPOSITORY}
+                    docker images
                 '''
             }
         }
-
 
         stage('Trivy Scan') {
             steps {
-
                 sh '''
-                    echo "========== TRIVY SECURITY SCAN =========="
-
-                    trivy --version
+                    echo "========== TRIVY SCAN =========="
 
                     trivy image \
-                        --severity CRITICAL \
-                        --exit-code 0 \
-                        --no-progress \
-                        ${ECR_REPOSITORY}:latest
-
-                    echo "Trivy scan completed successfully."
+                    --severity CRITICAL \
+                    --exit-code 0 \
+                    --no-progress \
+                    ${ECR_REPOSITORY}:latest
                 '''
             }
         }
 
-
         stage('ECR Login') {
             steps {
-
                 sh '''
                     echo "========== ECR LOGIN =========="
 
                     aws ecr get-login-password \
-                        --region ${AWS_REGION} \
-                    | docker login \
-                        --username AWS \
-                        --password-stdin ${ECR_REGISTRY}
-
-                    echo "ECR login successful."
+                    --region ${AWS_REGION} | \
+                    docker login \
+                    --username AWS \
+                    --password-stdin ${ECR_REGISTRY}
                 '''
             }
         }
-
 
         stage('Tag Docker Image') {
             steps {
-
                 sh '''
-                    echo "========== TAG DOCKER IMAGE =========="
+                    echo "========== TAG IMAGE =========="
 
-                    docker tag ${ECR_IMAGE} ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
-                    echo "Tagged image:"
-                    echo ${ECR_IMAGE}
+                    docker tag \
+                    ${ECR_REPOSITORY}:latest \
+                    ${ECR_IMAGE}
                 '''
             }
         }
-
 
         stage('Push Image to ECR') {
             steps {
-
                 sh '''
-                    echo "========== PUSH IMAGE TO ECR =========="
+                    echo "========== PUSH IMAGE =========="
 
-                    docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
-                    echo "Image pushed successfully."
+                    docker push ${ECR_IMAGE}
                 '''
             }
         }
 
-
         stage('Verify Image') {
             steps {
-
                 sh '''
-                    echo "========== VERIFY ECR IMAGE =========="
+                    echo "========== VERIFY IMAGE =========="
 
                     aws ecr describe-images \
-                        --repository-name ${ECR_REPOSITORY} \
-                        --region ${AWS_REGION} \
-                        --image-ids imageTag=latest
-
-                    echo "ECR image verified successfully."
+                    --repository-name ${ECR_REPOSITORY} \
+                    --region ${AWS_REGION}
                 '''
             }
         }
     }
 
-
     post {
 
         success {
-
-            echo '''
-            ========================================
-            FRONTEND CI PIPELINE SUCCESSFUL
-            ========================================
-            '''
-
-            echo "Docker Image: ${ECR_IMAGE}"
-            // echo "Build Number: ${BUILD_NUMBER}"
+            echo "===================================="
+            echo "FRONTEND PIPELINE SUCCESS"
+            echo "Image: ${ECR_IMAGE}"
+            echo "===================================="
         }
-
 
         failure {
-
-            echo '''
-            ========================================
-            FRONTEND CI PIPELINE FAILED
-            ========================================
-            '''
-
-            echo "Check the failed stage in Console Output."
+            echo "===================================="
+            echo "FRONTEND PIPELINE FAILED"
+            echo "===================================="
         }
 
-
         always {
-
             sh '''
-                echo "========== CLEANUP =========="
-                echo "========== CLEANUP =========="
-
                 rm -rf Application-Code/frontend/node_modules || true
             '''
         }
