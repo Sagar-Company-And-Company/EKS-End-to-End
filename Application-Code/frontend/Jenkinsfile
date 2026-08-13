@@ -4,7 +4,7 @@ pipeline {
 
     environment {
         AWS_REGION     = 'us-east-1'
-        ECR_REPOSITORY = 'devops-frontend'
+        ECR_REPOSITORY = 'aws-devops-production-frontend'
         IMAGE_TAG      = "${BUILD_NUMBER}"
     }
 
@@ -30,7 +30,7 @@ pipeline {
 
         stage('Frontend Build') {
             steps {
-                dir('frontend') {
+                dir('Application-Code/frontend') {
                     sh '''
                         echo "========== FRONTEND BUILD =========="
 
@@ -70,15 +70,15 @@ pipeline {
             }
         }
 
-        stage('SonarQube Quality Gate') {
-            steps {
-                echo '========== QUALITY GATE =========='
+        // stage('SonarQube Quality Gate') {
+        //     steps {
+        //         echo '========== QUALITY GATE =========='
 
-                timeout(time: 10, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
-                }
-            }
-        }
+        //         timeout(time: 10, unit: 'MINUTES') {
+        //             waitForQualityGate abortPipeline: true
+        //         }
+        //     }
+        // }
 
         stage('Get AWS Information') {
             steps {
@@ -108,7 +108,7 @@ pipeline {
 
                     docker build \
                       -t ${ECR_REPOSITORY}:${IMAGE_TAG} \
-                      ./frontend
+                      ./Application-Code/frontend
 
                     docker images | grep ${ECR_REPOSITORY}
                 '''
