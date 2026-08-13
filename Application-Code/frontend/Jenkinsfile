@@ -101,7 +101,7 @@ pipeline {
                     docker --version
 
                     docker build \
-                        -t ${ECR_REPOSITORY}:${IMAGE_TAG} \
+                        -t ${ECR_REPOSITORY}:latest \
                         ./Application-Code/frontend
 
                     echo "Docker image created:"
