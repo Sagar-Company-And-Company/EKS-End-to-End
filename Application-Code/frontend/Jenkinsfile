@@ -53,7 +53,7 @@ pipeline {
 
                         echo "Building React application..."
 
-                        npm run build
+                        sh 'NODE_OPTIONS=--openssl-legacy-provider npm run build'
 
                         echo "Frontend build completed successfully."
                     '''
