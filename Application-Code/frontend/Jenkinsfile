@@ -2,10 +2,6 @@ pipeline {
 
     agent any
 
-    tools {
-        nodejs 'node18'
-    }
-
     environment {
         AWS_REGION     = 'us-east-1'
         ECR_REPOSITORY = 'aws-devops-production-frontend'
