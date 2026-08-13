@@ -236,10 +236,10 @@ pipeline {
 
             sh '''
                 echo "========== CLEANUP =========="
+                echo "Check the stage in Console Output."
 
                 rm -rf Application-Code/frontend/node_modules || true
             '''
         }
     }
 }
-// 
