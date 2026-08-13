@@ -236,6 +236,7 @@ pipeline {
 
             sh '''
                 echo "========== CLEANUP =========="
+                echo "========== CLEANUP =========="
 
                 rm -rf Application-Code/frontend/node_modules || true
             '''
