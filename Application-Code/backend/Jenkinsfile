@@ -90,7 +90,6 @@ pipeline {
 
                 sh '''
                     echo "========== ECR LOGIN =========="
-                    echo "========== ECR LOGIN =========="
                     aws ecr get-login-password \
                     --region ${AWS_REGION} | \
                     docker login \
