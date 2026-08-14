@@ -134,7 +134,7 @@ pipeline {
 
                     cd k8-manifests
 
-                    sed -i "s|image:.*|image: ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest|g" backend/deployment.yaml
+                    yq e '.spec.template.spec.containers[0].image = env(ECR_IMAGE)' -i backend/deployment.yaml
 
                     git config user.email "jenkins@local"
                     git config user.name "Jenkins"
