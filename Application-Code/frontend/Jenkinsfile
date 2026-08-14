@@ -49,7 +49,7 @@ pipeline {
 
                     sh '''
                         echo "========== FRONTEND BUILD =========="
-                         echo "========== DOCKER BUILD =========="
+                        
                         node --version
                         npm --version
 
