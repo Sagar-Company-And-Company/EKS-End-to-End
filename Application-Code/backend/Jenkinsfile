@@ -1,0 +1,190 @@
+pipeline {
+
+    agent any
+
+    environment {
+        AWS_REGION     = 'us-east-1'
+        ECR_REPOSITORY = 'aws-devops-production-backend'
+        IMAGE_TAG      = "${BUILD_NUMBER}"
+
+        MANIFEST_REPO  = 'https://github.com/sj27773/k8-manifests.git'
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Frontend Build') {
+            steps {
+                dir('Application-Code/backend') {
+
+                    sh '''
+                        echo "========== FRONTEND BUILD =========="
+
+                        node --version
+                        npm --version
+
+                        npm install
+
+                        echo "Frontend build completed."
+                    '''
+                }
+            }
+        }
+
+        stage('Get AWS Information') {
+            steps {
+
+                script {
+
+                    env.AWS_ACCOUNT_ID = sh(
+                        script: 'aws sts get-caller-identity --query Account --output text',
+                        returnStdout: true
+                    ).trim()
+
+                    env.ECR_REGISTRY =
+                        "${env.AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+                    env.ECR_IMAGE =
+                        "${env.ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+
+                    echo "ECR Image = ${env.ECR_IMAGE}"
+                }
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+
+                sh '''
+                    echo "========== DOCKER BUILD =========="
+
+                    docker build \
+                    -t ${ECR_REPOSITORY}:${IMAGE_TAG} \
+                    ./Application-Code/backend
+                '''
+            }
+        }
+
+        stage('Trivy Scan') {
+            steps {
+
+                sh '''
+                    echo "========== TRIVY SCAN =========="
+
+                    trivy image \
+                    --severity CRITICAL \
+                    --exit-code 0 \
+                    --no-progress \
+                    ${ECR_REPOSITORY}:${IMAGE_TAG}
+                '''
+            }
+        }
+
+        stage('ECR Login') {
+            steps {
+
+                sh '''
+                    echo "========== ECR LOGIN =========="
+
+                    aws ecr get-login-password \
+                    --region ${AWS_REGION} | \
+                    docker login \
+                    --username AWS \
+                    --password-stdin ${ECR_REGISTRY}
+                '''
+            }
+        }
+
+        stage('Tag Docker Image') {
+            steps {
+
+                sh '''
+                    docker tag \
+                    ${ECR_REPOSITORY}:${IMAGE_TAG} \
+                    ${ECR_IMAGE}
+                '''
+            }
+        }
+
+        stage('Push Image To ECR') {
+            steps {
+
+                sh '''
+                    echo "========== PUSH IMAGE =========="
+
+                    docker push ${ECR_IMAGE}
+                '''
+            }
+        }
+
+        stage('Update Manifest Repo') {
+            steps {
+
+                sh '''
+                    echo "========== UPDATE MANIFEST =========="
+
+                    rm -rf k8-manifests
+
+                    git clone https://sj27773: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@github.com/sj27773/k8-manifests.git
+
+                    cd k8-manifests
+
+                    sed -i "s|image:.*|image: ${ECR_IMAGE}|g" frontend/deployment.yaml
+
+                    git config user.email "jenkins@local"
+                    git config user.name "Jenkins"
+
+                    git add .
+
+                    git commit -m "Update frontend image ${IMAGE_TAG}" || true
+
+                    git push origin main
+                '''
+            }
+        }
+
+        stage('Verify Image') {
+            steps {
+
+                sh '''
+                    aws ecr describe-images \
+                    --repository-name ${ECR_REPOSITORY} \
+                    --region ${AWS_REGION}
+                '''
+            }
+        }
+    }
+
+    post {
+
+        success {
+
+            echo '''
+========================================
+FRONTEND PIPELINE SUCCESS
+========================================
+'''
+        }
+
+        failure {
+
+            echo '''
+========================================
+FRONTEND PIPELINE FAILED
+========================================
+'''
+        }
+
+        always {
+
+            sh '''
+                rm -rf Application-Code/frontend/node_modules || true
+            '''
+        }
+    }
+}
