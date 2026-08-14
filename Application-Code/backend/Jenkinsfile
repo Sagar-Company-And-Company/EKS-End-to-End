@@ -106,7 +106,7 @@ pipeline {
                 sh '''
                     docker tag \
                     ${ECR_REPOSITORY}:${IMAGE_TAG} \
-                    ${ECR_IMAGE}
+                    ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
                 '''
             }
         }
@@ -117,7 +117,7 @@ pipeline {
                 sh '''
                     echo "========== PUSH IMAGE =========="
 
-                    docker push ${ECR_IMAGE}
+                     docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
                 '''
             }
         }
@@ -134,7 +134,7 @@ pipeline {
 
                     cd k8-manifests
 
-                    sed -i "s|image:.*|image: ${ECR_IMAGE}|g" backend/deployment.yaml
+                    sed -i "s|image:.*|image: ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest|g" backend/deployment.yaml
 
                     git config user.email "jenkins@local"
                     git config user.name "Jenkins"
