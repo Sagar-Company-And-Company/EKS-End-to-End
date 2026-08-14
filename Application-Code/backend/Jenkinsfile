@@ -18,32 +18,24 @@ pipeline {
             }
         }
         
-    stage('Detect Changes') {
-    steps {
-        script {
-            def changes = sh(
-                script: '''
-                    git diff --name-only HEAD~1 HEAD
-                ''',
-                returnStdout: true
-            ).trim()
+      stage('Check Backend Changes') {
+            steps {
+                script {
 
-            echo "Changed files:"
-            echo changes
+                    def changes = sh(
+                        script: "git diff --name-only HEAD~1 HEAD || true",
+                        returnStdout: true
+                    ).trim()
 
-            env.BACKEND_CHANGED = changes.split('\n').any {
-                it.startsWith('Application-Code/backend/')
-            }.toString()
+                    echo "Changed Files:"
+                    echo changes
 
-            env.FRONTEND_CHANGED = changes.split('\n').any {
-                it.startsWith('Application-Code/frontend/')
-            }.toString()
-
-            echo "BACKEND_CHANGED = ${env.BACKEND_CHANGED}"
-            echo "FRONTEND_CHANGED = ${env.FRONTEND_CHANGED}"
+                    if (!changes.contains("Application-Code/backend")) {
+                        error("No backend changes detected. Skipping build.")
+                    }
+                }
             }
         }
-    }
 
         stage('Backend Build') {
             steps {
