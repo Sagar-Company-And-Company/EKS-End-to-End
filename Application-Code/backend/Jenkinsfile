@@ -2,12 +2,18 @@ pipeline {
 
     agent any
 
+    options {
+        skipDefaultCheckout(true)
+    }
+
     environment {
         AWS_REGION     = 'us-east-1'
         ECR_REPOSITORY = 'aws-devops-production-backend'
         IMAGE_TAG      = "${BUILD_NUMBER}"
 
         MANIFEST_REPO  = 'https://github.com/sj27773/k8-manifests.git'
+
+        SKIP_BACKEND   = 'false'
     }
 
     stages {
@@ -17,162 +23,263 @@ pipeline {
                 checkout scm
             }
         }
-        
-      stage('Check Backend Changes') {
+
+        stage('Check Backend Changes') {
             steps {
                 script {
 
+                    echo "========== CHECK BACKEND CHANGES =========="
+
                     def changes = sh(
-                        script: "git diff --name-only HEAD~1 HEAD || true",
+                        script: """
+                            git diff --name-only HEAD~1 HEAD -- 'Application-Code/backend/**' || true
+                        """,
                         returnStdout: true
                     ).trim()
 
-                    echo "Changed Files:"
-                    echo changes
+                    if (changes) {
 
-                    if (!changes.contains("Application-Code/backend")) {
-                        error("No backend changes detected. Skipping build.")
+                        echo "Backend changes detected:"
+                        echo changes
+
+                        env.SKIP_BACKEND = 'false'
+
+                    } else {
+
+                        echo "No backend changes detected."
+                        echo "Skipping backend build and deployment."
+
+                        env.SKIP_BACKEND = 'true'
                     }
                 }
             }
         }
 
         stage('Backend Build') {
+            when {
+                expression {
+                    env.SKIP_BACKEND != 'true'
+                }
+            }
+
             steps {
                 dir('Application-Code/backend') {
 
                     sh '''
-                        echo "========== FRONTEND BUILD =========="
+                        echo "========== BACKEND BUILD =========="
 
                         node --version
                         npm --version
 
                         npm install
 
-                        echo "Frontend build completed."
+                        echo "Backend build completed successfully."
                     '''
                 }
             }
         }
 
         stage('Get AWS Information') {
+            when {
+                expression {
+                    env.SKIP_BACKEND != 'true'
+                }
+            }
+
             steps {
 
                 script {
 
+                    echo "========== AWS INFORMATION =========="
+
                     env.AWS_ACCOUNT_ID = sh(
-                        script: 'aws sts get-caller-identity --query Account --output text',
+                        script: '''
+                            aws sts get-caller-identity \
+                            --query Account \
+                            --output text
+                        ''',
                         returnStdout: true
                     ).trim()
 
                     env.ECR_REGISTRY =
-                        "${env.AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+                        "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.AWS_REGION}.amazonaws.com"
 
                     env.ECR_IMAGE =
-                        "${env.ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+                        "${env.ECR_REGISTRY}/${env.ECR_REPOSITORY}:${env.IMAGE_TAG}"
 
-                    echo "ECR Image = ${env.ECR_IMAGE}"
+                    echo "AWS Account ID = ${env.AWS_ACCOUNT_ID}"
+                    echo "ECR Registry   = ${env.ECR_REGISTRY}"
+                    echo "ECR Image      = ${env.ECR_IMAGE}"
                 }
             }
         }
 
         stage('Docker Build') {
+            when {
+                expression {
+                    env.SKIP_BACKEND != 'true'
+                }
+            }
+
             steps {
 
                 sh '''
                     echo "========== DOCKER BUILD =========="
 
                     docker build \
-                    -t ${ECR_REPOSITORY}:${IMAGE_TAG} \
-                    ./Application-Code/backend
+                        -t ${ECR_REPOSITORY}:${IMAGE_TAG} \
+                        ./Application-Code/backend
                 '''
             }
         }
 
         stage('Trivy Scan') {
+            when {
+                expression {
+                    env.SKIP_BACKEND != 'true'
+                }
+            }
+
             steps {
 
                 sh '''
                     echo "========== TRIVY SCAN =========="
 
                     trivy image \
-                    --severity CRITICAL \
-                    --exit-code 0 \
-                    --no-progress \
-                    ${ECR_REPOSITORY}:${IMAGE_TAG}
+                        --severity CRITICAL \
+                        --exit-code 0 \
+                        --no-progress \
+                        ${ECR_REPOSITORY}:${IMAGE_TAG}
                 '''
             }
         }
 
         stage('ECR Login') {
+            when {
+                expression {
+                    env.SKIP_BACKEND != 'true'
+                }
+            }
+
             steps {
 
                 sh '''
                     echo "========== ECR LOGIN =========="
+
                     aws ecr get-login-password \
-                    --region ${AWS_REGION} | \
+                        --region ${AWS_REGION} | \
                     docker login \
-                    --username AWS \
-                    --password-stdin ${ECR_REGISTRY}
+                        --username AWS \
+                        --password-stdin ${ECR_REGISTRY}
                 '''
             }
         }
 
         stage('Tag Docker Image') {
+            when {
+                expression {
+                    env.SKIP_BACKEND != 'true'
+                }
+            }
+
             steps {
 
                 sh '''
+                    echo "========== TAG DOCKER IMAGE =========="
+
                     docker tag \
-                    ${ECR_REPOSITORY}:${IMAGE_TAG} \
-                    ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
+                        ${ECR_REPOSITORY}:${IMAGE_TAG} \
+                        ${ECR_IMAGE}
                 '''
             }
         }
 
         stage('Push Image To ECR') {
+            when {
+                expression {
+                    env.SKIP_BACKEND != 'true'
+                }
+            }
+
             steps {
 
                 sh '''
-                    echo "========== PUSH IMAGE =========="
+                    echo "========== PUSH IMAGE TO ECR =========="
 
-                     docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
+                    docker push ${ECR_IMAGE}
                 '''
             }
         }
 
         stage('Update Manifest Repo') {
+            when {
+                expression {
+                    env.SKIP_BACKEND != 'true'
+                }
+            }
+
             steps {
 
-                sh '''
-                    echo "========== UPDATE MANIFEST =========="
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'manifest-github-creds',
+                        usernameVariable: 'GIT_USERNAME',
+                        passwordVariable: 'GIT_TOKEN'
+                    )
+                ]) {
 
-                    rm -rf k8-manifests
+                    sh '''
+                        echo "========== UPDATE BACKEND MANIFEST =========="
 
-                    git clone https://sj27773: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@github.com/sj27773/k8-manifests.git
+                        rm -rf k8-manifests
 
-                    cd k8-manifests
+                        git clone \
+                            https://${GIT_USERNAME}:${GIT_TOKEN}@github.com/sj27773/k8-manifests.git \
+                            k8-manifests
 
-                    yq e '.spec.template.spec.containers[0].image = env(ECR_IMAGE)' -i backend/deployment.yaml
+                        cd k8-manifests
 
-                    git config user.email "jenkins@local"
-                    git config user.name "Jenkins"
+                        echo "Updating backend deployment image..."
 
-                    git add .
+                        yq e \
+                            '.spec.template.spec.containers[0].image = strenv(ECR_IMAGE)' \
+                            -i backend/deployment.yaml
 
-                    git commit -m "Update frontend image ${IMAGE_TAG}" || true
+                        echo "Updated deployment:"
+                        cat backend/deployment.yaml
 
-                    git push origin main
-                '''
+                        git config user.email "jenkins@local"
+                        git config user.name "Jenkins"
+
+                        git add backend/deployment.yaml
+
+                        git diff --cached
+
+                        git commit \
+                            -m "Update backend image ${IMAGE_TAG}" || true
+
+                        git push origin main
+                    '''
+                }
             }
         }
 
         stage('Verify Image') {
+            when {
+                expression {
+                    env.SKIP_BACKEND != 'true'
+                }
+            }
+
             steps {
 
                 sh '''
+                    echo "========== VERIFY ECR IMAGE =========="
+
                     aws ecr describe-images \
-                    --repository-name ${ECR_REPOSITORY} \
-                    --region ${AWS_REGION}
+                        --repository-name ${ECR_REPOSITORY} \
+                        --region ${AWS_REGION} \
+                        --image-ids imageTag=${IMAGE_TAG}
                 '''
             }
         }
@@ -182,18 +289,34 @@ pipeline {
 
         success {
 
-            echo '''
+            script {
+
+                if (env.SKIP_BACKEND == 'true') {
+
+                    echo '''
 ========================================
-FRONTEND PIPELINE SUCCESS
+BACKEND PIPELINE SUCCESS
+NO BACKEND CHANGES - BUILD SKIPPED
 ========================================
 '''
+
+                } else {
+
+                    echo '''
+========================================
+BACKEND PIPELINE SUCCESS
+BUILD + ECR + MANIFEST UPDATE COMPLETED
+========================================
+'''
+                }
+            }
         }
 
         failure {
 
             echo '''
 ========================================
-FRONTEND PIPELINE FAILED
+BACKEND PIPELINE FAILED
 ========================================
 '''
         }
@@ -201,7 +324,10 @@ FRONTEND PIPELINE FAILED
         always {
 
             sh '''
-                rm -rf Application-Code/frontend/node_modules || true
+                echo "Cleaning backend workspace..."
+
+                rm -rf Application-Code/backend/node_modules || true
+                rm -rf k8-manifests || true
             '''
         }
     }
