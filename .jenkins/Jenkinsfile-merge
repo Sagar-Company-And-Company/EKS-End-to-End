@@ -1,6 +1,13 @@
 pipeline {
     agent any
 
+    triggers {
+        upstream(
+            upstreamProjects: 'Jenkins PR CI/PR-test',
+            threshold: hudson.model.Result.SUCCESS
+        )
+    }
+
     environment {
         GITHUB_REPO   = 'Sagar-Company-And-Company/EKS-End-to-End'
         SOURCE_BRANCH = 'PR-test'
@@ -23,28 +30,34 @@ pipeline {
                         set -e
 
                         echo "======================================"
-                        echo "Finding PR-test -> dev"
+                        echo "Finding PR: PR-test -> dev"
                         echo "======================================"
 
                         RESPONSE=$(curl -s \
-                          -u "${PR_USER}:${PR_TOKEN}" \
-                          -H "Accept: application/vnd.github+json" \
-                          "https://api.github.com/repos/${GITHUB_REPO}/pulls?state=open&head=Sagar-Company-And-Company:${SOURCE_BRANCH}&base=${TARGET_BRANCH}")
+                            -u "${PR_USER}:${PR_TOKEN}" \
+                            -H "Accept: application/vnd.github+json" \
+                            "https://api.github.com/repos/${GITHUB_REPO}/pulls?state=open&head=Sagar-Company-And-Company:${SOURCE_BRANCH}&base=${TARGET_BRANCH}")
 
                         echo "$RESPONSE"
 
-                        PR_NUMBER=$(echo "$RESPONSE" | python3 -c "
-import sys,json
-d=json.load(sys.stdin)
-print(d[0]['number'] if d else '')
-")
+                        PR_NUMBER=$(echo "$RESPONSE" | python3 -c '
+import sys
+import json
+
+data = json.load(sys.stdin)
+
+if data:
+    print(data[0]["number"])
+else:
+    print("")
+')
 
                         if [ -z "$PR_NUMBER" ]; then
                             echo "No open PR found"
                             exit 1
                         fi
 
-                        echo "PR Number: ${PR_NUMBER}"
+                        echo "Found PR #${PR_NUMBER}"
 
                         echo "$PR_NUMBER" > pr_number.txt
                     '''
@@ -54,7 +67,7 @@ print(d[0]['number'] if d else '')
             }
         }
 
-        stage('Verify Jenkins CI Status') {
+        stage('Verify Jenkins CI') {
             steps {
                 withCredentials([
                     usernamePassword(
@@ -69,55 +82,53 @@ print(d[0]['number'] if d else '')
 
                         PR_NUMBER=$(cat pr_number.txt)
 
-                        echo "======================================"
-                        echo "Checking PR #${PR_NUMBER}"
-                        echo "======================================"
+                        echo "Checking Jenkins CI status for PR #${PR_NUMBER}"
 
                         PR_RESPONSE=$(curl -s \
-                          -u "${PR_USER}:${PR_TOKEN}" \
-                          -H "Accept: application/vnd.github+json" \
-                          "https://api.github.com/repos/${GITHUB_REPO}/pulls/${PR_NUMBER}")
+                            -u "${PR_USER}:${PR_TOKEN}" \
+                            -H "Accept: application/vnd.github+json" \
+                            "https://api.github.com/repos/${GITHUB_REPO}/pulls/${PR_NUMBER}")
 
-                        HEAD_SHA=$(echo "$PR_RESPONSE" | python3 -c "
-import sys,json
-print(json.load(sys.stdin)['head']['sha'])
-")
+                        HEAD_SHA=$(echo "$PR_RESPONSE" | python3 -c '
+import sys
+import json
+print(json.load(sys.stdin)["head"]["sha"])
+')
 
                         echo "PR HEAD SHA: ${HEAD_SHA}"
 
                         STATUS_RESPONSE=$(curl -s \
-                          -u "${PR_USER}:${PR_TOKEN}" \
-                          -H "Accept: application/vnd.github+json" \
-                          "https://api.github.com/repos/${GITHUB_REPO}/commits/${HEAD_SHA}/status")
+                            -u "${PR_USER}:${PR_TOKEN}" \
+                            -H "Accept: application/vnd.github+json" \
+                            "https://api.github.com/repos/${GITHUB_REPO}/commits/${HEAD_SHA}/status")
 
                         echo "$STATUS_RESPONSE"
 
-                        JENKINS_STATUS=$(echo "$STATUS_RESPONSE" | python3 -c "
-import sys,json
+                        JENKINS_STATUS=$(echo "$STATUS_RESPONSE" | python3 -c '
+import sys
+import json
 
-d=json.load(sys.stdin)
+data = json.load(sys.stdin)
 
-statuses=d.get('statuses', [])
-
-matches=[
-    x for x in statuses
-    if x.get('context') == 'continuous-integration/jenkins/branch'
+matches = [
+    x for x in data.get("statuses", [])
+    if x.get("context") == "continuous-integration/jenkins/branch"
 ]
 
 if not matches:
-    print('NOT_FOUND')
+    print("NOT_FOUND")
 else:
-    print(matches[0].get('state',''))
-")
+    print(matches[0].get("state", ""))
+')
 
                         echo "Jenkins status: ${JENKINS_STATUS}"
 
                         if [ "$JENKINS_STATUS" != "success" ]; then
-                            echo "Required Jenkins CI check has not passed"
+                            echo "Required Jenkins status is not SUCCESS"
                             exit 1
                         fi
 
-                        echo "Required Jenkins CI check PASSED"
+                        echo "Required Jenkins status PASSED"
                     '''
                 }
             }
@@ -140,36 +151,46 @@ else:
 
                         echo "======================================"
                         echo "Approving PR #${PR_NUMBER}"
-                        echo "User: ${PR_USER}"
+                        echo "Using GitHub user: ${PR_USER}"
                         echo "======================================"
 
                         RESPONSE=$(curl -s -X POST \
-                          -u "${PR_USER}:${PR_TOKEN}" \
-                          -H "Accept: application/vnd.github+json" \
-                          -H "Content-Type: application/json" \
-                          "https://api.github.com/repos/${GITHUB_REPO}/pulls/${PR_NUMBER}/reviews" \
-                          -d '{
-                            "event": "APPROVE",
-                            "body": "Automatically approved after successful Jenkins CI."
-                          }')
+                            -u "${PR_USER}:${PR_TOKEN}" \
+                            -H "Accept: application/vnd.github+json" \
+                            -H "Content-Type: application/json" \
+                            "https://api.github.com/repos/${GITHUB_REPO}/pulls/${PR_NUMBER}/reviews" \
+                            -d '{
+                                "event": "APPROVE",
+                                "body": "Automatically approved after successful Jenkins CI."
+                            }')
 
                         echo "$RESPONSE"
 
-                        echo "$RESPONSE" | python3 -c "
-import sys,json
+                        RESULT=$(echo "$RESPONSE" | python3 -c '
+import sys
+import json
 
-d=json.load(sys.stdin)
+data = json.load(sys.stdin)
 
-if 'message' in d:
-    print('Approval failed:', d['message'])
-    sys.exit(1)
+if "message" in data:
+    print("ERROR:" + data["message"])
+elif data.get("state") == "APPROVED":
+    print("APPROVED")
+else:
+    print("ERROR:Approval was not successful")
+')
 
-if d.get('state') != 'APPROVED':
-    print('PR was not approved')
-    sys.exit(1)
+                        echo "$RESULT"
 
-print('PR approved successfully')
-"
+                        case "$RESULT" in
+                            APPROVED)
+                                echo "PR approved successfully"
+                                ;;
+                            *)
+                                echo "PR approval failed"
+                                exit 1
+                                ;;
+                        esac
                     '''
                 }
             }
@@ -196,23 +217,24 @@ print('PR approved successfully')
 
                         for i in $(seq 1 20)
                         do
-                            echo "Attempt $i/20"
-
                             RESPONSE=$(curl -s \
-                              -u "${PR_USER}:${PR_TOKEN}" \
-                              -H "Accept: application/vnd.github+json" \
-                              "https://api.github.com/repos/${GITHUB_REPO}/pulls/${PR_NUMBER}")
+                                -u "${PR_USER}:${PR_TOKEN}" \
+                                -H "Accept: application/vnd.github+json" \
+                                "https://api.github.com/repos/${GITHUB_REPO}/pulls/${PR_NUMBER}")
 
-                            MERGEABLE=$(echo "$RESPONSE" | python3 -c "
-import sys,json
-print(json.load(sys.stdin).get('mergeable'))
-")
+                            MERGEABLE=$(echo "$RESPONSE" | python3 -c '
+import sys
+import json
+print(json.load(sys.stdin).get("mergeable"))
+')
 
-                            MERGE_STATE=$(echo "$RESPONSE" | python3 -c "
-import sys,json
-print(json.load(sys.stdin).get('mergeable_state'))
-")
+                            MERGE_STATE=$(echo "$RESPONSE" | python3 -c '
+import sys
+import json
+print(json.load(sys.stdin).get("mergeable_state"))
+')
 
+                            echo "Attempt $i/20"
                             echo "mergeable=${MERGEABLE}"
                             echo "mergeable_state=${MERGE_STATE}"
 
@@ -226,7 +248,6 @@ print(json.load(sys.stdin).get('mergeable_state'))
                                 exit 1
                             fi
 
-                            echo "Waiting 10 seconds..."
                             sleep 10
                         done
 
@@ -257,22 +278,23 @@ print(json.load(sys.stdin).get('mergeable_state'))
                         echo "======================================"
 
                         RESPONSE=$(curl -s -X PUT \
-                          -u "${PR_USER}:${PR_TOKEN}" \
-                          -H "Accept: application/vnd.github+json" \
-                          -H "Content-Type: application/json" \
-                          "https://api.github.com/repos/${GITHUB_REPO}/pulls/${PR_NUMBER}/merge" \
-                          -d '{
-                            "merge_method": "merge",
-                            "commit_title": "Automatic merge: PR-test -> dev",
-                            "commit_message": "Automatically merged after successful Jenkins CI."
-                          }')
+                            -u "${PR_USER}:${PR_TOKEN}" \
+                            -H "Accept: application/vnd.github+json" \
+                            -H "Content-Type: application/json" \
+                            "https://api.github.com/repos/${GITHUB_REPO}/pulls/${PR_NUMBER}/merge" \
+                            -d '{
+                                "merge_method": "merge",
+                                "commit_title": "Automatic merge: PR-test -> dev",
+                                "commit_message": "Automatically merged after successful Jenkins CI."
+                            }')
 
                         echo "$RESPONSE"
 
-                        MERGED=$(echo "$RESPONSE" | python3 -c "
-import sys,json
-print(json.load(sys.stdin).get('merged',False))
-")
+                        MERGED=$(echo "$RESPONSE" | python3 -c '
+import sys
+import json
+print(json.load(sys.stdin).get("merged", False))
+')
 
                         if [ "$MERGED" != "True" ]; then
                             echo "PR merge failed"
@@ -291,15 +313,15 @@ print(json.load(sys.stdin).get('merged',False))
 
     post {
         success {
-            echo '======================================'
-            echo 'AUTOMATIC PR MERGE SUCCESS'
-            echo '======================================'
+            echo "======================================"
+            echo "AUTOMATIC PR MERGE SUCCESS"
+            echo "======================================"
         }
 
         failure {
-            echo '======================================'
-            echo 'AUTOMATIC PR MERGE FAILED'
-            echo '======================================'
+            echo "======================================"
+            echo "AUTOMATIC PR MERGE FAILED"
+            echo "======================================"
         }
     }
 }
