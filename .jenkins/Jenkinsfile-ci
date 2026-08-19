@@ -105,18 +105,24 @@ print(d.get('number',''))
         }
     }
 
-    post {
-        success {
-            echo '======================================'
-            echo 'CI SUCCESS'
-            echo 'Jenkins status will become SUCCESS'
-            echo '======================================'
-        }
+post {
+    success {
+        echo '======================================'
+        echo 'CI SUCCESS'
+        echo 'Triggering PR Auto Merge'
+        echo '======================================'
 
-        failure {
-            echo '======================================'
-            echo 'CI FAILED'
-            echo '======================================'
-        }
+        build(
+            job: 'Jenkins PR Auto Merge',
+            wait: false,
+            propagate: false
+        )
+    }
+
+    failure {
+        echo '======================================'
+        echo 'CI FAILED'
+        echo 'PR Auto Merge will NOT be triggered'
+        echo '======================================'
     }
 }
