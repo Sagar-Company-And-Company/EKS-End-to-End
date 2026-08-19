@@ -1,13 +1,6 @@
 pipeline {
     agent any
 
-    triggers {
-        upstream(
-            upstreamProjects: 'Jenkins PR CI/PR-test',
-            threshold: hudson.model.Result.SUCCESS
-        )
-    }
-
     environment {
         GITHUB_REPO   = 'Sagar-Company-And-Company/EKS-End-to-End'
         SOURCE_BRANCH = 'PR-test'
@@ -21,20 +14,20 @@ pipeline {
                 withCredentials([
                     usernamePassword(
                         credentialsId: 'PR-creds',
-                        usernameVariable: 'PR_USER',
-                        passwordVariable: 'PR_TOKEN'
+                        usernameVariable: 'GH_USER',
+                        passwordVariable: 'GH_TOKEN'
                     )
                 ]) {
-
                     sh '''
                         set -e
 
                         echo "======================================"
                         echo "Finding PR: PR-test -> dev"
+                        echo "Using GitHub user: ${GH_USER}"
                         echo "======================================"
 
                         RESPONSE=$(curl -s \
-                            -u "${PR_USER}:${PR_TOKEN}" \
+                            -u "${GH_USER}:${GH_TOKEN}" \
                             -H "Accept: application/vnd.github+json" \
                             "https://api.github.com/repos/${GITHUB_REPO}/pulls?state=open&head=Sagar-Company-And-Company:${SOURCE_BRANCH}&base=${TARGET_BRANCH}")
 
@@ -43,22 +36,16 @@ pipeline {
                         PR_NUMBER=$(echo "$RESPONSE" | python3 -c '
 import sys
 import json
-
 data = json.load(sys.stdin)
-
-if data:
-    print(data[0]["number"])
-else:
-    print("")
+print(data[0]["number"] if data else "")
 ')
 
                         if [ -z "$PR_NUMBER" ]; then
-                            echo "No open PR found"
+                            echo "ERROR: No open PR found"
                             exit 1
                         fi
 
                         echo "Found PR #${PR_NUMBER}"
-
                         echo "$PR_NUMBER" > pr_number.txt
                     '''
                 }
@@ -72,20 +59,17 @@ else:
                 withCredentials([
                     usernamePassword(
                         credentialsId: 'PR-creds',
-                        usernameVariable: 'PR_USER',
-                        passwordVariable: 'PR_TOKEN'
+                        usernameVariable: 'GH_USER',
+                        passwordVariable: 'GH_TOKEN'
                     )
                 ]) {
-
                     sh '''
                         set -e
 
                         PR_NUMBER=$(cat pr_number.txt)
 
-                        echo "Checking Jenkins CI status for PR #${PR_NUMBER}"
-
                         PR_RESPONSE=$(curl -s \
-                            -u "${PR_USER}:${PR_TOKEN}" \
+                            -u "${GH_USER}:${GH_TOKEN}" \
                             -H "Accept: application/vnd.github+json" \
                             "https://api.github.com/repos/${GITHUB_REPO}/pulls/${PR_NUMBER}")
 
@@ -95,10 +79,11 @@ import json
 print(json.load(sys.stdin)["head"]["sha"])
 ')
 
-                        echo "PR HEAD SHA: ${HEAD_SHA}"
+                        echo "PR #${PR_NUMBER}"
+                        echo "HEAD SHA: ${HEAD_SHA}"
 
                         STATUS_RESPONSE=$(curl -s \
-                            -u "${PR_USER}:${PR_TOKEN}" \
+                            -u "${GH_USER}:${GH_TOKEN}" \
                             -H "Accept: application/vnd.github+json" \
                             "https://api.github.com/repos/${GITHUB_REPO}/commits/${HEAD_SHA}/status")
 
@@ -115,20 +100,17 @@ matches = [
     if x.get("context") == "continuous-integration/jenkins/branch"
 ]
 
-if not matches:
-    print("NOT_FOUND")
-else:
-    print(matches[0].get("state", ""))
+print(matches[0].get("state", "") if matches else "NOT_FOUND")
 ')
 
                         echo "Jenkins status: ${JENKINS_STATUS}"
 
                         if [ "$JENKINS_STATUS" != "success" ]; then
-                            echo "Required Jenkins status is not SUCCESS"
+                            echo "ERROR: Jenkins CI has not passed"
                             exit 1
                         fi
 
-                        echo "Required Jenkins status PASSED"
+                        echo "Jenkins CI PASSED"
                     '''
                 }
             }
@@ -139,11 +121,10 @@ else:
                 withCredentials([
                     usernamePassword(
                         credentialsId: 'PR-creds',
-                        usernameVariable: 'PR_USER',
-                        passwordVariable: 'PR_TOKEN'
+                        usernameVariable: 'GH_USER',
+                        passwordVariable: 'GH_TOKEN'
                     )
                 ]) {
-
                     sh '''
                         set -e
 
@@ -151,11 +132,11 @@ else:
 
                         echo "======================================"
                         echo "Approving PR #${PR_NUMBER}"
-                        echo "Using GitHub user: ${PR_USER}"
+                        echo "Approver: ${GH_USER}"
                         echo "======================================"
 
                         RESPONSE=$(curl -s -X POST \
-                            -u "${PR_USER}:${PR_TOKEN}" \
+                            -u "${GH_USER}:${GH_TOKEN}" \
                             -H "Accept: application/vnd.github+json" \
                             -H "Content-Type: application/json" \
                             "https://api.github.com/repos/${GITHUB_REPO}/pulls/${PR_NUMBER}/reviews" \
@@ -184,75 +165,13 @@ else:
 
                         case "$RESULT" in
                             APPROVED)
-                                echo "PR approved successfully"
+                                echo "PR APPROVED successfully"
                                 ;;
                             *)
-                                echo "PR approval failed"
+                                echo "PR APPROVAL FAILED"
                                 exit 1
                                 ;;
                         esac
-                    '''
-                }
-            }
-        }
-
-        stage('Wait For Mergeable') {
-            steps {
-                withCredentials([
-                    usernamePassword(
-                        credentialsId: 'PR-creds',
-                        usernameVariable: 'PR_USER',
-                        passwordVariable: 'PR_TOKEN'
-                    )
-                ]) {
-
-                    sh '''
-                        set -e
-
-                        PR_NUMBER=$(cat pr_number.txt)
-
-                        echo "======================================"
-                        echo "Waiting for GitHub mergeable state"
-                        echo "======================================"
-
-                        for i in $(seq 1 20)
-                        do
-                            RESPONSE=$(curl -s \
-                                -u "${PR_USER}:${PR_TOKEN}" \
-                                -H "Accept: application/vnd.github+json" \
-                                "https://api.github.com/repos/${GITHUB_REPO}/pulls/${PR_NUMBER}")
-
-                            MERGEABLE=$(echo "$RESPONSE" | python3 -c '
-import sys
-import json
-print(json.load(sys.stdin).get("mergeable"))
-')
-
-                            MERGE_STATE=$(echo "$RESPONSE" | python3 -c '
-import sys
-import json
-print(json.load(sys.stdin).get("mergeable_state"))
-')
-
-                            echo "Attempt $i/20"
-                            echo "mergeable=${MERGEABLE}"
-                            echo "mergeable_state=${MERGE_STATE}"
-
-                            if [ "$MERGEABLE" = "true" ] && [ "$MERGE_STATE" = "clean" ]; then
-                                echo "PR is ready to merge"
-                                exit 0
-                            fi
-
-                            if [ "$MERGEABLE" = "false" ]; then
-                                echo "PR is not mergeable"
-                                exit 1
-                            fi
-
-                            sleep 10
-                        done
-
-                        echo "PR did not become mergeable"
-                        exit 1
                     '''
                 }
             }
@@ -263,11 +182,10 @@ print(json.load(sys.stdin).get("mergeable_state"))
                 withCredentials([
                     usernamePassword(
                         credentialsId: 'PR-creds',
-                        usernameVariable: 'PR_USER',
-                        passwordVariable: 'PR_TOKEN'
+                        usernameVariable: 'GH_USER',
+                        passwordVariable: 'GH_TOKEN'
                     )
                 ]) {
-
                     sh '''
                         set -e
 
@@ -278,7 +196,7 @@ print(json.load(sys.stdin).get("mergeable_state"))
                         echo "======================================"
 
                         RESPONSE=$(curl -s -X PUT \
-                            -u "${PR_USER}:${PR_TOKEN}" \
+                            -u "${GH_USER}:${GH_TOKEN}" \
                             -H "Accept: application/vnd.github+json" \
                             -H "Content-Type: application/json" \
                             "https://api.github.com/repos/${GITHUB_REPO}/pulls/${PR_NUMBER}/merge" \
@@ -297,7 +215,7 @@ print(json.load(sys.stdin).get("merged", False))
 ')
 
                         if [ "$MERGED" != "True" ]; then
-                            echo "PR merge failed"
+                            echo "ERROR: PR merge failed"
                             exit 1
                         fi
 
