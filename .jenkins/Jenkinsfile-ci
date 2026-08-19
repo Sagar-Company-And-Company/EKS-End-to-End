@@ -35,35 +35,36 @@ pipeline {
             }
         }
 
-        stage('Create PR') {
-            when {
-                branch 'PR-test'
-            }
+  stage('Create PR') {
+    when {
+        branch 'PR-test'
+    }
 
-            steps {
-                withCredentials([
-                    usernamePassword(
-                        credentialsId: 'github-creds',
-                        usernameVariable: 'GH_USER',
-                        passwordVariable: 'GH_TOKEN'
-                    )
-                ]) {
+    steps {
+        withCredentials([
+            usernamePassword(
+                credentialsId: 'github-creds',
+                usernameVariable: 'GH_USER',
+                passwordVariable: 'GH_TOKEN'
+            )
+        ]) {
 
-                    sh '''
-                        set -e
+            sh '''
+                set -e
 
-                        echo "======================================"
-                        echo "Checking Existing PR"
-                        echo "======================================"
+                echo "======================================"
+                echo "Checking Existing PR"
+                echo "======================================"
 
-                        RESPONSE=$(curl -s \
-                            -u "${GH_USER}:${GH_TOKEN}" \
-                            -H "Accept: application/vnd.github+json" \
-                            "https://api.github.com/repos/${GITHUB_REPO}/pulls?state=open&head=Sagar-Company-And-Company:${SOURCE_BRANCH}&base=${TARGET_BRANCH}")
+                RESPONSE=$(curl -sS \
+                    -u "$GH_USER:$GH_TOKEN" \
+                    -H "Accept: application/vnd.github+json" \
+                    -H "X-GitHub-Api-Version: 2022-11-28" \
+                    "https://api.github.com/repos/$GITHUB_REPO/pulls?state=open&head=Sagar-Company-And-Company:$SOURCE_BRANCH&base=$TARGET_BRANCH")
 
-                        echo "$RESPONSE"
+                echo "$RESPONSE"
 
-                        PR_NUMBER=$(echo "$RESPONSE" | python3 -c '
+                PR_NUMBER=$(printf '%s' "$RESPONSE" | python3 -c '
 import sys
 import json
 
@@ -75,52 +76,60 @@ else:
     print("")
 ')
 
-                        if [ -n "$PR_NUMBER" ]; then
-                            echo "Existing PR found: #${PR_NUMBER}"
+                if [ -n "$PR_NUMBER" ]; then
+                    echo "Existing PR found: #$PR_NUMBER"
+                    exit 0
+                fi
 
-                        else
-                            echo "No existing PR found"
-                            echo "Creating PR: ${SOURCE_BRANCH} -> ${TARGET_BRANCH}"
+                echo "No existing PR found"
+                echo "Creating PR: $SOURCE_BRANCH -> $TARGET_BRANCH"
 
-                            CREATE_RESPONSE=$(curl -s -X POST \
-                                -u "${GH_USER}:${GH_TOKEN}" \
-                                -H "Accept: application/vnd.github+json" \
-                                -H "Content-Type: application/json" \
-                                "https://api.github.com/repos/${GITHUB_REPO}/pulls" \
-                                -d "{
-                                    \"title\": \"Automatic PR: ${SOURCE_BRANCH} -> ${TARGET_BRANCH}\",
-                                    \"head\": \"${SOURCE_BRANCH}\",
-                                    \"base\": \"${TARGET_BRANCH}\",
-                                    \"body\": \"Automatically created by Jenkins after successful CI.\"
-                                }")
+                cat > pr.json <<EOF
+{
+  "title": "Automatic PR: $SOURCE_BRANCH -> $TARGET_BRANCH",
+  "head": "$SOURCE_BRANCH",
+  "base": "$TARGET_BRANCH",
+  "body": "Automatically created by Jenkins after successful CI."
+}
+EOF
 
-                            echo "$CREATE_RESPONSE"
+                echo "PR request body:"
+                cat pr.json
 
-                            PR_NUMBER=$(echo "$CREATE_RESPONSE" | python3 -c '
+                CREATE_RESPONSE=$(curl -sS -X POST \
+                    -u "$GH_USER:$GH_TOKEN" \
+                    -H "Accept: application/vnd.github+json" \
+                    -H "X-GitHub-Api-Version: 2022-11-28" \
+                    -H "Content-Type: application/json" \
+                    "https://api.github.com/repos/$GITHUB_REPO/pulls" \
+                    --data-binary @pr.json)
+
+                echo "GitHub response:"
+                echo "$CREATE_RESPONSE"
+
+                PR_NUMBER=$(printf '%s' "$CREATE_RESPONSE" | python3 -c '
 import sys
 import json
 
 data = json.load(sys.stdin)
 
-if "number" not in data:
-    print("")
-
-else:
+if "number" in data:
     print(data["number"])
+else:
+    print("")
 ')
 
-                            if [ -z "$PR_NUMBER" ]; then
-                                echo "ERROR: Failed to create PR"
-                                exit 1
-                            fi
+                if [ -z "$PR_NUMBER" ]; then
+                    echo "ERROR: Failed to create PR"
+                    exit 1
+                fi
 
-                            echo "Created PR #${PR_NUMBER}"
-                        fi
-                    '''
-                }
-            }
+                echo "Created PR #$PR_NUMBER"
+            '''
         }
     }
+  }
+}
 
     post {
         success {
