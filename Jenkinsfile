@@ -20,6 +20,7 @@ pipeline {
                 echo 'Running CI...'
 
                 sh '''
+                    set -e
                     echo "Simple CI test"
                     echo "CI PASSED"
                 '''
@@ -92,9 +93,9 @@ pipeline {
             steps {
                 withCredentials([
                     usernamePassword(
-                        credentialsId: 'github-creds',
-                        usernameVariable: 'GITHUB_USER',
-                        passwordVariable: 'GITHUB_TOKEN'
+                        credentialsId: 'PR-creds',
+                        usernameVariable: 'PR_USER',
+                        passwordVariable: 'PR_TOKEN'
                     )
                 ]) {
 
@@ -103,10 +104,10 @@ pipeline {
 
                         PR_NUMBER=$(cat pr_number.txt)
 
-                        echo "Approving PR #${PR_NUMBER}"
+                        echo "Approving PR #${PR_NUMBER} using ${PR_USER}"
 
                         curl -s -X POST \
-                          -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                          -H "Authorization: Bearer ${PR_TOKEN}" \
                           -H "Accept: application/vnd.github+json" \
                           -H "Content-Type: application/json" \
                           "https://api.github.com/repos/${GITHUB_REPO}/pulls/${PR_NUMBER}/reviews" \
@@ -118,11 +119,11 @@ pipeline {
                         cat approve_response.json
 
                         if grep -q '"message"' approve_response.json; then
-                            echo "GitHub returned an approval error"
+                            echo "PR approval failed"
                             exit 1
                         fi
 
-                        echo "PR approval completed"
+                        echo "PR #${PR_NUMBER} approved successfully"
                     '''
                 }
             }
@@ -136,9 +137,9 @@ pipeline {
             steps {
                 withCredentials([
                     usernamePassword(
-                        credentialsId: 'github-creds',
-                        usernameVariable: 'GITHUB_USER',
-                        passwordVariable: 'GITHUB_TOKEN'
+                        credentialsId: 'PR-creds',
+                        usernameVariable: 'PR_USER',
+                        passwordVariable: 'PR_TOKEN'
                     )
                 ]) {
 
@@ -147,29 +148,27 @@ pipeline {
 
                         PR_NUMBER=$(cat pr_number.txt)
 
-                        echo "Checking PR merge status..."
+                        echo "Waiting for GitHub required status checks..."
 
                         for i in $(seq 1 20)
                         do
-                            echo "Merge attempt $i"
-
                             RESPONSE=$(curl -s \
-                              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                              -H "Authorization: Bearer ${PR_TOKEN}" \
                               -H "Accept: application/vnd.github+json" \
                               "https://api.github.com/repos/${GITHUB_REPO}/pulls/${PR_NUMBER}")
 
-                            MERGEABLE=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('mergeable'))")
-                            MERGE_STATE=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('mergeable_state'))")
+                            MERGEABLE=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('mergeable'))")
+                            MERGE_STATE=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('mergeable_state'))")
 
-                            echo "mergeable: ${MERGEABLE}"
-                            echo "mergeable_state: ${MERGE_STATE}"
+                            echo "mergeable=${MERGEABLE}"
+                            echo "mergeable_state=${MERGE_STATE}"
 
-                            if [ "$MERGEABLE" = "true" ]; then
+                            if [ "$MERGEABLE" = "true" ] && [ "$MERGE_STATE" = "clean" ]; then
 
                                 echo "Merging PR #${PR_NUMBER}"
 
                                 MERGE_RESPONSE=$(curl -s -X PUT \
-                                  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                                  -H "Authorization: Bearer ${PR_TOKEN}" \
                                   -H "Accept: application/vnd.github+json" \
                                   -H "Content-Type: application/json" \
                                   "https://api.github.com/repos/${GITHUB_REPO}/pulls/${PR_NUMBER}/merge" \
@@ -189,7 +188,7 @@ pipeline {
                                 fi
                             fi
 
-                            echo "PR not ready for merge. Waiting 15 seconds..."
+                            echo "PR is not ready for merge. Waiting 15 seconds..."
                             sleep 15
                         done
 
