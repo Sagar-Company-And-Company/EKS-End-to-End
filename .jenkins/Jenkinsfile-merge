@@ -21,7 +21,9 @@ pipeline {
                     sh '''
                         set -e
 
-                        curl -s \
+                        echo "Finding PR: ${SOURCE_BRANCH} -> ${TARGET_BRANCH}"
+
+                        curl -sf \
                           -u "${GH_USER}:${GH_TOKEN}" \
                           -H "Accept: application/vnd.github+json" \
                           -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -36,7 +38,7 @@ with open("prs.json") as f:
     data = json.load(f)
 
 if isinstance(data, dict) and "message" in data:
-    print("API_ERROR")
+    print(data["message"], file=sys.stderr)
     sys.exit(1)
 
 for pr in data:
@@ -48,7 +50,7 @@ for pr in data:
         print(pr["number"])
         sys.exit(0)
 
-print("NOT_FOUND")
+print("No open PR found", file=sys.stderr)
 sys.exit(1)
 PY
 )
@@ -76,43 +78,28 @@ PY
 
                         PR_NUMBER=$(cat pr_number.txt)
 
-                        curl -s \
+                        curl -sf \
                           -u "${GH_USER}:${GH_TOKEN}" \
                           -H "Accept: application/vnd.github+json" \
                           -H "X-GitHub-Api-Version: 2022-11-28" \
                           "https://api.github.com/repos/${GITHUB_REPO}/pulls/${PR_NUMBER}" \
                           > pr.json
 
-                        HEAD_SHA=$(python3 -c '
+                        HEAD_SHA=$(python3 - <<'PY'
 import json
 print(json.load(open("pr.json"))["head"]["sha"])
-')
+PY
+)
 
                         echo "PR #${PR_NUMBER}"
                         echo "HEAD SHA: ${HEAD_SHA}"
 
-                        curl -s \
+                        curl -sf \
                           -u "${GH_USER}:${GH_TOKEN}" \
                           -H "Accept: application/vnd.github+json" \
                           -H "X-GitHub-Api-Version: 2022-11-28" \
                           "https://api.github.com/repos/${GITHUB_REPO}/commits/${HEAD_SHA}/status" \
                           > status.json
-
-                        python3 - <<'PY'
-import json
-
-data = json.load(open("status.json"))
-
-print("Overall status:", data.get("state"))
-
-for s in data.get("statuses", []):
-    print(
-        "Context:",
-        s.get("context"),
-        "State:",
-        s.get("state")
-    )
-PY
 
                         JENKINS_STATUS=$(python3 - <<'PY'
 import json
@@ -161,7 +148,7 @@ PY
                         echo "Approving PR #${PR_NUMBER}"
                         echo "Approver: ${GH_USER}"
 
-                        RESPONSE=$(curl -s -X POST \
+                        RESPONSE=$(curl -sf -X POST \
                           -u "${GH_USER}:${GH_TOKEN}" \
                           -H "Accept: application/vnd.github+json" \
                           -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -177,21 +164,15 @@ PY
                         APPROVED=$(echo "${RESPONSE}" | python3 -c '
 import sys,json
 d=json.load(sys.stdin)
-
-if "message" in d:
-    print("ERROR:" + d["message"])
-else:
-    print(str(d.get("state","")).upper())
+print(str(d.get("state","")).upper())
 ')
-
-                        echo "Approval result: ${APPROVED}"
 
                         if [ "${APPROVED}" != "APPROVED" ]; then
                             echo "PR approval failed"
                             exit 1
                         fi
 
-                        echo "PR APPROVED SUCCESSFULLY"
+                        echo "PR APPROVED"
                     '''
                 }
             }
@@ -213,9 +194,9 @@ else:
 
                         for i in $(seq 1 30)
                         do
-                            echo "Checking mergeability - attempt ${i}/30"
+                            echo "Checking PR mergeability: ${i}/30"
 
-                            curl -s \
+                            curl -sf \
                               -u "${GH_USER}:${GH_TOKEN}" \
                               -H "Accept: application/vnd.github+json" \
                               -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -227,10 +208,10 @@ import json
 
 d = json.load(open("merge.json"))
 
-print("mergeable =", d.get("mergeable"))
-print("mergeable_state =", d.get("mergeable_state"))
-print("state =", d.get("state"))
-print("draft =", d.get("draft"))
+print("mergeable:", d.get("mergeable"))
+print("mergeable_state:", d.get("mergeable_state"))
+print("state:", d.get("state"))
+print("draft:", d.get("draft"))
 PY
 
                             READY=$(python3 - <<'PY'
@@ -238,10 +219,10 @@ import json
 
 d = json.load(open("merge.json"))
 
-mergeable = d.get("mergeable")
-state = d.get("mergeable_state")
-
-if mergeable is True and state == "clean":
+if (
+    d.get("mergeable") is True
+    and d.get("mergeable_state") == "clean"
+):
     print("YES")
 else:
     print("NO")
@@ -249,25 +230,24 @@ PY
 )
 
                             if [ "${READY}" = "YES" ]; then
-                                echo "======================================"
-                                echo "PR IS READY TO MERGE"
-                                echo "======================================"
+                                echo "PR IS MERGEABLE"
                                 exit 0
                             fi
 
-                            MERGE_STATE=$(python3 -c '
+                            MERGE_STATE=$(python3 - <<'PY'
 import json
 print(json.load(open("merge.json")).get("mergeable_state"))
-')
+PY
+)
 
                             if [ "${MERGE_STATE}" = "dirty" ]; then
-                                echo "GitHub reports PR as dirty/not mergeable"
+                                echo "PR has conflicts"
                                 cat merge.json
                                 exit 1
                             fi
 
                             if [ "${MERGE_STATE}" = "blocked" ]; then
-                                echo "PR is blocked by GitHub rules/checks"
+                                echo "PR is blocked by GitHub rules"
                                 cat merge.json
                                 exit 1
                             fi
@@ -297,9 +277,7 @@ print(json.load(open("merge.json")).get("mergeable_state"))
 
                         PR_NUMBER=$(cat pr_number.txt)
 
-                        echo "======================================"
-                        echo "MERGING PR #${PR_NUMBER}"
-                        echo "======================================"
+                        echo "Merging PR #${PR_NUMBER}"
 
                         RESPONSE=$(curl -s -X PUT \
                           -u "${GH_USER}:${GH_TOKEN}" \
