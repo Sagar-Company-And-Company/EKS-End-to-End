@@ -17,10 +17,12 @@ pipeline {
 
         stage('CI Test') {
             steps {
-                echo 'Running CI...'
-
                 sh '''
                     set -e
+                    echo "======================================"
+                    echo "Running CI Test"
+                    echo "======================================"
+
                     echo "Simple CI test"
                     echo "CI PASSED"
                 '''
@@ -36,8 +38,8 @@ pipeline {
                 withCredentials([
                     usernamePassword(
                         credentialsId: 'github-creds',
-                        usernameVariable: 'GITHUB_USER',
-                        passwordVariable: 'GITHUB_TOKEN'
+                        usernameVariable: 'GH_USER',
+                        passwordVariable: 'GH_TOKEN'
                     )
                 ]) {
 
@@ -47,19 +49,22 @@ pipeline {
                         echo "Checking existing PR..."
 
                         EXISTING_PR=$(curl -s \
-                          -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                          -u "${GH_USER}:${GH_TOKEN}" \
                           -H "Accept: application/vnd.github+json" \
                           "https://api.github.com/repos/${GITHUB_REPO}/pulls?state=open&head=Sagar-Company-And-Company:${SOURCE_BRANCH}&base=${TARGET_BRANCH}" \
                           | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0]['number'] if d else '')")
 
                         if [ -n "$EXISTING_PR" ]; then
-                            echo "PR already exists: #${EXISTING_PR}"
+
+                            echo "Existing PR found: #${EXISTING_PR}"
                             echo "$EXISTING_PR" > pr_number.txt
+
                         else
-                            echo "Creating PR: ${SOURCE_BRANCH} -> ${TARGET_BRANCH}"
+
+                            echo "Creating PR ${SOURCE_BRANCH} -> ${TARGET_BRANCH}"
 
                             RESPONSE=$(curl -s -X POST \
-                              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                              -u "${GH_USER}:${GH_TOKEN}" \
                               -H "Accept: application/vnd.github+json" \
                               -H "Content-Type: application/json" \
                               "https://api.github.com/repos/${GITHUB_REPO}/pulls" \
@@ -72,16 +77,61 @@ pipeline {
 
                             echo "$RESPONSE"
 
-                            PR_NUMBER=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['number'])")
+                            PR_NUMBER=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('number',''))")
+
+                            if [ -z "$PR_NUMBER" ]; then
+                                echo "Failed to create PR"
+                                exit 1
+                            fi
 
                             echo "Created PR #${PR_NUMBER}"
-
                             echo "$PR_NUMBER" > pr_number.txt
+
                         fi
                     '''
                 }
 
                 archiveArtifacts artifacts: 'pr_number.txt', fingerprint: true
+            }
+        }
+
+        stage('Validate Approval Credentials') {
+            when {
+                branch 'PR-test'
+            }
+
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'PR-creds',
+                        usernameVariable: 'PR_USER',
+                        passwordVariable: 'PR_TOKEN'
+                    )
+                ]) {
+
+                    sh '''
+                        set -e
+
+                        echo "Validating PR approval credentials..."
+
+                        USER_RESPONSE=$(curl -s -u "${PR_USER}:${PR_TOKEN}" \
+                          -H "Accept: application/vnd.github+json" \
+                          https://api.github.com/user)
+
+                        echo "$USER_RESPONSE" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+
+if 'message' in d:
+    print('GitHub authentication failed:', d['message'])
+    sys.exit(1)
+
+print('Authenticated GitHub user:', d.get('login'))
+"
+
+                        echo "PR approval credentials are valid"
+                    '''
+                }
             }
         }
 
@@ -106,24 +156,82 @@ pipeline {
 
                         echo "Approving PR #${PR_NUMBER} using ${PR_USER}"
 
-                        curl -s -X POST \
-                          -H "Authorization: Bearer ${PR_TOKEN}" \
+                        APPROVE_RESPONSE=$(curl -s -X POST \
+                          -u "${PR_USER}:${PR_TOKEN}" \
                           -H "Accept: application/vnd.github+json" \
                           -H "Content-Type: application/json" \
                           "https://api.github.com/repos/${GITHUB_REPO}/pulls/${PR_NUMBER}/reviews" \
                           -d '{
                             "event": "APPROVE",
                             "body": "Automatically approved after successful Jenkins CI."
-                          }' > approve_response.json
+                          }')
 
-                        cat approve_response.json
+                        echo "$APPROVE_RESPONSE"
 
-                        if grep -q '"message"' approve_response.json; then
-                            echo "PR approval failed"
-                            exit 1
-                        fi
+                        echo "$APPROVE_RESPONSE" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
 
-                        echo "PR #${PR_NUMBER} approved successfully"
+if 'message' in d:
+    print('PR approval failed:', d['message'])
+    sys.exit(1)
+
+print('PR approved successfully')
+"
+                    '''
+                }
+            }
+        }
+
+        stage('Wait For Required Checks') {
+            when {
+                branch 'PR-test'
+            }
+
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'PR-creds',
+                        usernameVariable: 'PR_USER',
+                        passwordVariable: 'PR_TOKEN'
+                    )
+                ]) {
+
+                    sh '''
+                        set -e
+
+                        PR_NUMBER=$(cat pr_number.txt)
+
+                        echo "Waiting for GitHub required checks..."
+
+                        for i in $(seq 1 20)
+                        do
+                            echo "Check attempt $i/20"
+
+                            STATUS=$(curl -s \
+                              -u "${PR_USER}:${PR_TOKEN}" \
+                              -H "Accept: application/vnd.github+json" \
+                              "https://api.github.com/repos/${GITHUB_REPO}/commits/${GIT_COMMIT}/status")
+
+                            STATE=$(echo "$STATUS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('state',''))")
+
+                            echo "Combined status: ${STATE}"
+
+                            if [ "$STATE" = "success" ]; then
+                                echo "Required Jenkins status check passed"
+                                exit 0
+                            fi
+
+                            if [ "$STATE" = "failure" ] || [ "$STATE" = "error" ]; then
+                                echo "Required status check failed"
+                                exit 1
+                            fi
+
+                            sleep 15
+                        done
+
+                        echo "Required status check did not become successful"
+                        exit 1
                     '''
                 }
             }
@@ -148,12 +256,12 @@ pipeline {
 
                         PR_NUMBER=$(cat pr_number.txt)
 
-                        echo "Waiting for GitHub required status checks..."
+                        echo "Checking PR #${PR_NUMBER}"
 
-                        for i in $(seq 1 20)
+                        for i in $(seq 1 10)
                         do
                             RESPONSE=$(curl -s \
-                              -H "Authorization: Bearer ${PR_TOKEN}" \
+                              -u "${PR_USER}:${PR_TOKEN}" \
                               -H "Accept: application/vnd.github+json" \
                               "https://api.github.com/repos/${GITHUB_REPO}/pulls/${PR_NUMBER}")
 
@@ -168,7 +276,7 @@ pipeline {
                                 echo "Merging PR #${PR_NUMBER}"
 
                                 MERGE_RESPONSE=$(curl -s -X PUT \
-                                  -H "Authorization: Bearer ${PR_TOKEN}" \
+                                  -u "${PR_USER}:${PR_TOKEN}" \
                                   -H "Accept: application/vnd.github+json" \
                                   -H "Content-Type: application/json" \
                                   "https://api.github.com/repos/${GITHUB_REPO}/pulls/${PR_NUMBER}/merge" \
@@ -183,12 +291,14 @@ pipeline {
                                 MERGED=$(echo "$MERGE_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('merged',False))")
 
                                 if [ "$MERGED" = "True" ]; then
-                                    echo "PR #${PR_NUMBER} merged successfully"
+                                    echo "======================================"
+                                    echo "PR #${PR_NUMBER} MERGED SUCCESSFULLY"
+                                    echo "======================================"
                                     exit 0
                                 fi
                             fi
 
-                            echo "PR is not ready for merge. Waiting 15 seconds..."
+                            echo "PR not ready for merge. Waiting 15 seconds..."
                             sleep 15
                         done
 
@@ -202,15 +312,16 @@ pipeline {
 
     post {
         success {
-            echo '======================================'
-            echo 'CI + PR + APPROVAL + MERGE SUCCESS'
-            echo '======================================'
+            echo "======================================"
+            echo "CI + PR + APPROVAL + MERGE SUCCESS"
+            echo "======================================"
         }
 
         failure {
-            echo '======================================'
-            echo 'PIPELINE FAILED'
-            echo '======================================'
+            echo "======================================"
+            echo "PIPELINE FAILED"
+            echo "======================================"
         }
     }
 }
+
