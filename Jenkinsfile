@@ -3,30 +3,32 @@ pipeline {
 
     stages {
 
-        stage('Checkout') {
-            steps {
-                checkout scm
-            }
-        }
-
         stage('Test') {
             steps {
-                echo 'PR test started...'
-                sh 'echo "Running unit tests..."'
-                sh 'echo "All tests passed!"'
+                echo '================================'
+                echo 'PR PIPELINE TEST STARTED'
+                echo '================================'
+
+                sh 'echo "Hello from Jenkins PR CI"'
+                sh 'echo "Running test..."'
+                sh 'echo "TEST PASSED"'
             }
         }
 
         stage('Build Test') {
             steps {
-                sh 'echo "Build test passed!"'
+                echo '================================'
+                echo 'BUILD TEST'
+                echo '================================'
+
+                sh 'echo "Build successful"'
             }
         }
     }
 
     post {
         success {
-            echo 'PR CI PASSED'
+            echo 'PR CI SUCCESS'
         }
 
         failure {
