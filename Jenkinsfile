@@ -1,38 +1,86 @@
 pipeline {
     agent any
 
+    environment {
+        REPO = 'Sagar-Company-And-Company/EKS-End-to-End'
+        SOURCE = 'test-pr'
+        TARGET = 'dev'
+    }
+
     stages {
 
         stage('Test') {
             steps {
-                echo '================================'
-                echo 'PR PIPELINE TEST STARTED'
-                echo '================================'
-
-                sh 'echo "Hello from Jenkins PR CI"'
-                sh 'echo "Running test..."'
-                sh 'echo "TEST PASSED"'
+                echo 'Jenkins CI test successful'
             }
         }
 
-        stage('Build Test') {
+        stage('Create PR') {
             steps {
-                echo '================================'
-                echo 'BUILD TEST'
-                echo '================================'
+                withCredentials([
+                    string(
+                        credentialsId: 'github-pr-token',
+                        variable: 'GH_TOKEN'
+                    )
+                ]) {
+                    sh '''
+                        export GH_TOKEN="$GH_TOKEN"
 
-                sh 'echo "Build successful"'
+                        PR=$(gh pr list \
+                          --repo "$REPO" \
+                          --head "$SOURCE" \
+                          --base "$TARGET" \
+                          --state open \
+                          --json number \
+                          --jq '.[0].number')
+
+                        if [ -z "$PR" ]; then
+                            echo "Creating PR..."
+
+                            gh pr create \
+                              --repo "$REPO" \
+                              --head "$SOURCE" \
+                              --base "$TARGET" \
+                              --title "Test PR: $SOURCE to $TARGET" \
+                              --body "Automatically created by Jenkins."
+                        else
+                            echo "PR already exists: #$PR"
+                        fi
+                    '''
+                }
             }
         }
-    }
 
-    post {
-        success {
-            echo 'PR CI SUCCESS'
-        }
+        stage('Merge PR') {
+            steps {
+                withCredentials([
+                    string(
+                        credentialsId: 'github-pr-token',
+                        variable: 'GH_TOKEN'
+                    )
+                ]) {
+                    sh '''
+                        export GH_TOKEN="$GH_TOKEN"
 
-        failure {
-            echo 'PR CI FAILED'
+                        PR=$(gh pr list \
+                          --repo "$REPO" \
+                          --head "$SOURCE" \
+                          --base "$TARGET" \
+                          --state open \
+                          --json number \
+                          --jq '.[0].number')
+
+                        echo "PR Number: $PR"
+
+                        sleep 10
+
+                        gh pr merge "$PR" \
+                          --repo "$REPO" \
+                          --merge \
+                          --delete-branch=false
+                    '''
+                }
+            }
         }
     }
 }
