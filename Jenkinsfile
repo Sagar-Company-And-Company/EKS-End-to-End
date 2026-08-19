@@ -3,7 +3,7 @@ pipeline {
 
     environment {
         REPO = 'Sagar-Company-And-Company/EKS-End-to-End'
-        SOURCE = 'test-pr'
+        SOURCE = 'PR-test'
         TARGET = 'dev'
     }
 
@@ -19,7 +19,7 @@ pipeline {
             steps {
                 withCredentials([
                     string(
-                        credentialsId: 'github-pr-token',
+                        credentialsId: 'github-creds',
                         variable: 'GH_TOKEN'
                     )
                 ]) {
